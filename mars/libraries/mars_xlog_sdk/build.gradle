@@ -7,16 +7,13 @@ version PROJ_VERSION
 artifactId = PROJ_ARTIFACTID
 
 android {
-    compileSdkVersion 31
-    buildToolsVersion '30.0.2'
+    namespace "com.tencent.mars.xlog"
+    compileSdkVersion 34
     defaultConfig {
         minSdkVersion 19
         targetSdkVersion 29
         ndk {
-            // TODO: changes this for your application if needed
-            moduleName = "mmnet"
-            abiFilter "armeabi"
-            abiFilter "armeabi-v7a"
+            abiFilters "armeabi-v7a", "arm64-v8a"
         }
     }
     sourceSets {
@@ -33,8 +30,8 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_7
-        targetCompatibility JavaVersion.VERSION_1_7
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
     buildTypes {
         release {

@@ -61,15 +61,73 @@ ANDROID_STL_FILE = {
         }
 
 
+def get_ndk_host_tag():
+    system_str = platform.system().lower()
+    arch = platform.machine().lower()
+    if system_str == 'darwin':
+        preferred = 'darwin-arm64' if arch in ('arm64', 'aarch64') else 'darwin-x86_64'
+    elif system_str == 'linux':
+        preferred = 'linux-arm64' if arch in ('arm64', 'aarch64') else 'linux-x86_64'
+    elif system_str == 'windows':
+        preferred = 'windows-x86_64'
+    else:
+        preferred = system_str
+
+    prebuilt_root = os.path.join(NDK_ROOT, 'toolchains', 'llvm', 'prebuilt')
+    preferred_path = os.path.join(prebuilt_root, preferred)
+    if os.path.exists(preferred_path):
+        return preferred
+
+    # Fallback to any existing prebuilt dir (common on macOS: only darwin-x86_64 exists)
+    fallback_tags = ['darwin-x86_64', 'darwin-arm64', 'linux-x86_64', 'linux-arm64', 'windows-x86_64']
+    for tag in fallback_tags:
+        if os.path.exists(os.path.join(prebuilt_root, tag)):
+            return tag
+
+    return preferred
+
+
+def get_libcxx_shared(arch):
+    # Prefer new NDK layout; fall back to legacy paths.
+    legacy_path = ANDROID_STL_FILE.get(arch, '')
+    if legacy_path and os.path.exists(legacy_path):
+        return legacy_path
+
+    host_tag = get_ndk_host_tag()
+    sysroot_lib = os.path.join(NDK_ROOT, 'toolchains', 'llvm', 'prebuilt', host_tag, 'sysroot', 'usr', 'lib')
+    triple_map = {
+        'armeabi': 'arm-linux-androideabi',
+        'armeabi-v7a': 'arm-linux-androideabi',
+        'arm64-v8a': 'aarch64-linux-android',
+        'x86': 'i686-linux-android',
+        'x86_64': 'x86_64-linux-android',
+    }
+    triple = triple_map.get(arch)
+    if not triple:
+        raise FileNotFoundError('Unsupported ABI for libc++_shared: %s' % arch)
+
+    candidates = [
+        os.path.join(sysroot_lib, triple, 'libc++_shared.so'),
+    ]
+    candidates.extend(glob.glob(os.path.join(sysroot_lib, triple, '*', 'libc++_shared.so')))
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+
+    raise FileNotFoundError('libc++_shared.so not found for ABI %s under %s' % (arch, sysroot_lib))
+
+
 def get_android_strip_cmd(arch):
 
-    system_str = platform.system().lower()
-    if (system_architecture_is64()):
-        system_str = system_str + '-x86_64'
+    host_tag = get_ndk_host_tag()
+    llvm_strip = os.path.join(NDK_ROOT, 'toolchains', 'llvm', 'prebuilt', host_tag, 'bin', 'llvm-strip')
+    if os.path.exists(llvm_strip):
+        strip_cmd = llvm_strip
     else:
-        pass
-
-    strip_cmd = ANDROID_STRIP_FILE[arch] %(system_str)
+        system_str = platform.system().lower()
+        if (system_architecture_is64()):
+            system_str = system_str + '-x86_64'
+        strip_cmd = ANDROID_STRIP_FILE[arch] %(system_str)
     print('Android strip cmd:%s' %(strip_cmd))
     return strip_cmd
 
@@ -122,8 +180,9 @@ def build_android(incremental, arch, target_option=''):
         shutil.copy(f, lib_path)
 
     # copy stl
-    shutil.copy(ANDROID_STL_FILE[arch], symbol_path)
-    shutil.copy(ANDROID_STL_FILE[arch], lib_path)
+    stl_path = get_libcxx_shared(arch)
+    shutil.copy(stl_path, symbol_path)
+    shutil.copy(stl_path, lib_path)
 
 
     #strip
@@ -181,5 +240,3 @@ if __name__ == '__main__':
             else:
                 main(False, archs)
                 break
-
-
