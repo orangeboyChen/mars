@@ -52,8 +52,10 @@ if(ANDROID)
     get_filename_component(EXPORT_XLOG_EXP_FILE libraries/mars_android_sdk/jni/export.exp ABSOLUTE)
     set(SELF_XLOG_LINKER_FLAG "-Wl,--gc-sections -Wl,--version-script='${EXPORT_XLOG_EXP_FILE}'") 
     if(ANDROID_ABI STREQUAL "x86_64" OR ANDROID_ABI STREQUAL "x86")
-        set(SELF_XLOG_LINKER_FLAG "-Wl,--gc-sections -Wl,--version-script='${EXPORT_XLOG_EXP_FILE}' -Wl,--no-warn-shared-textrel") 
+        set(SELF_XLOG_LINKER_FLAG "-Wl,--gc-sections -Wl,--version-script='${EXPORT_XLOG_EXP_FILE}' -Wl,--no-warn-shared-textrel")
     endif()
+    find_library(CRYPT_LIB crypto PATHS openssl/openssl_lib_android/${ANDROID_ABI} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    find_library(SSL_LIB ssl PATHS openssl/openssl_lib_android/${ANDROID_ABI} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     target_link_libraries(${SELF_LIB_NAME} "${SELF_XLOG_LINKER_FLAG}"
                             xlog
                             mars-boost
@@ -61,7 +63,17 @@ if(ANDROID)
                             libzstd_static
                             ${log-lib}
                             ${z-lib}
+                            ${SSL_LIB}
+                            ${CRYPT_LIB}
                             )
+    target_link_options(${SELF_LIB_NAME} PRIVATE "-Wl,-z,max-page-size=16384")
+    target_link_options(${SELF_LIB_NAME} PRIVATE "-Wl,-z,common-page-size=16384")
+    target_link_options(${SELF_LIB_NAME} PRIVATE "-v")
+    add_compile_options(
+            -Werror
+            -Wno-error=deprecated-declarations
+            -Wno-error=deprecated-builtins
+    )
  
     # marsstn
     set(SELF_LIB_NAME marsstn)
@@ -69,8 +81,6 @@ if(ANDROID)
     add_library(${SELF_LIB_NAME} SHARED ${SELF_SRC_FILES})
     install(TARGETS ${SELF_LIB_NAME} LIBRARY DESTINATION ${SELF_LIBS_OUT} ARCHIVE DESTINATION ${SELF_LIBS_OUT})
     link_directories(${SELF_LIBS_OUT})
-    find_library(CRYPT_LIB crypto PATHS openssl/openssl_lib_android/${ANDROID_ABI} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-    find_library(SSL_LIB ssl PATHS openssl/openssl_lib_android/${ANDROID_ABI} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     target_link_libraries(${SELF_LIB_NAME} "-Wl,--gc-sections"
                         ${log-lib}
                         stn
