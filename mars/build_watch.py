@@ -49,14 +49,20 @@ def build_watch(tag=''):
     if not libtool_libs(libtool_src_libs, libtool_simulator_dst_lib):
         return False
 
-    dst_framework_path = INSTALL_PATH + '/device/mars.xcframework'
+    dst_framework_path = INSTALL_PATH + '/out/mars.xcframework'
     dst_framework_device_path = INSTALL_PATH + '/device/mars.framework'
     make_static_framework(libtool_os_dst_lib, dst_framework_device_path, XLOG_COPY_HEADER_FILES, '../')
-    os.system('mv ' + dst_framework_device_path + '/os ' + dst_framework_device_path + '/mars')
+    src = os.path.join(dst_framework_device_path, 'os')
+    dst = os.path.join(dst_framework_device_path, 'mars')
+    if os.path.exists(src):
+        os.rename(src, dst)
 
     dst_framework_simulator_path = INSTALL_PATH + '/simu/mars.framework'
     make_static_framework(libtool_simulator_dst_lib, dst_framework_simulator_path, XLOG_COPY_HEADER_FILES, '../')
-    os.system('mv ' + dst_framework_simulator_path + '/simulator ' + dst_framework_simulator_path + '/mars')
+    src = os.path.join(dst_framework_simulator_path, 'simulator')
+    dst = os.path.join(dst_framework_simulator_path, 'mars')
+    if os.path.exists(src):
+        shutil.move(src, dst)
     os.system('xcodebuild -create-xcframework -framework "' + dst_framework_device_path + '" -framework "' + dst_framework_simulator_path + '" -output "' + dst_framework_path + '"')
 
     print('==================Output========================')
