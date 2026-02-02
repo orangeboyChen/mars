@@ -30,7 +30,6 @@ except KeyError as identifier:
 
 
 BUILD_OUT_PATH = 'cmake_build/Android'
-ANDROID_LIBS_INSTALL_PATH = BUILD_OUT_PATH + '/'
 ANDROID_BUILD_CMD = 'cmake "%s" %s -DANDROID_ABI="%s" ' \
                     '-DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=%s/build/cmake/android.toolchain.cmake ' \
                     '-DANDROID_TOOLCHAIN=clang -DANDROID_NDK=%s ' \
@@ -135,10 +134,13 @@ def get_android_strip_cmd(arch):
 def build_android(incremental, arch, target_option=''):
 
     before_time = time.time()
-    
-    clean(BUILD_OUT_PATH, incremental)
-    os.chdir(BUILD_OUT_PATH)
-    
+
+    build_out_path = os.path.join(BUILD_OUT_PATH, arch)
+    android_libs_install_path = build_out_path + '/'
+
+    clean(build_out_path, incremental)
+    os.chdir(build_out_path)
+
     build_cmd = ANDROID_BUILD_CMD %(SCRIPT_PATH, ANDROID_GENERATOR, arch, NDK_ROOT, NDK_ROOT, target_option)
     print("build cmd:" + build_cmd)
     ret = os.system(build_cmd)
@@ -175,7 +177,7 @@ def build_android(incremental, arch, target_option=''):
     os.mkdir(lib_path)
 
 
-    for f in glob.glob(ANDROID_LIBS_INSTALL_PATH + "*.so"):
+    for f in glob.glob(android_libs_install_path + "*.so"):
         shutil.copy(f, symbol_path)
         shutil.copy(f, lib_path)
 
@@ -224,7 +226,7 @@ if __name__ == '__main__':
             main(False, archs, tag=sys.argv[1])
             break
         else:
-            archs = {'armeabi-v7a', 'arm64-v8a'}
+            archs = {'armeabi-v7a', 'arm64-v8a', 'x86_64'}
             num = input('Enter menu:\n1. Clean && build mars.\n2. Build incrementally mars.\n3. Clean && build xlog.\n4. Exit\n')
             if num == '1':
                 main(False, archs)
