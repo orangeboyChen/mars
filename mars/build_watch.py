@@ -49,7 +49,7 @@ def build_watch(tag=''):
     if not libtool_libs(libtool_src_libs, libtool_simulator_dst_lib):
         return False
 
-    dst_framework_path = INSTALL_PATH + '/device/mars.xcframework'
+    dst_framework_path = INSTALL_PATH + '/out/mars.xcframework'
     dst_framework_device_path = INSTALL_PATH + '/device/mars.framework'
     make_static_framework(libtool_os_dst_lib, dst_framework_device_path, XLOG_COPY_HEADER_FILES, '../')
     src = os.path.join(dst_framework_device_path, 'os')
