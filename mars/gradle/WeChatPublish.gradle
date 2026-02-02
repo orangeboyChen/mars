@@ -371,8 +371,7 @@ class WeChatAndroidLibraryPublishExtension extends WeChatPublishExtension {
                 title = null
 
                 def classpathFiles = project.files(android.getBootClasspath().join(File.pathSeparator))
-                classpathFiles += project.files(project.configurations.compile)
-//                classpathFiles += project.files(project.configurations.implementation)
+                classpathFiles += project.files(project.configurations.implementation)
                 doFirst { classpath += classpathFiles }
 
                 source = variant.javaCompile.source
@@ -395,13 +394,13 @@ class WeChatAndroidLibraryPublishExtension extends WeChatPublishExtension {
             }
 
             def javadocJarTask = project.task("javadocJar${cVariantName}", type: Jar) {
-                classifier = 'javadoc'
+                archiveClassifier.set('javadoc')
                 from javadocTask.destinationDir
                 dependsOn javadocTask
             }
 
             def sourcesJarTask = project.task("sourcesJar${cVariantName}", type: Jar) {
-                classifier = 'sources'
+                archiveClassifier.set('sources')
 
                 def srcDirs = []
                 variant.sourceSets.each { sources ->
