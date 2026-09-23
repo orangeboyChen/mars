@@ -47,14 +47,17 @@
 mod appender;
 mod config;
 mod console;
+mod dump;
 mod file_util;
 mod formater;
+mod sys;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 pub use config::{AppenderError, AppenderMode, FileIoAction, LogLevel, XLogConfig, XLoggerInfo};
+pub use dump::xlogger_memory_dump;
 pub use formater::log_formater;
 /// Re-exported so callers (and the FFI layer) do not have to depend on
 /// `mars-xlog-buffer` just to build a [`XLogConfig`].

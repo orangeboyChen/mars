@@ -24,7 +24,6 @@ use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -40,6 +39,9 @@ use crate::file_util::{
     move_old_files, now_secs, same_local_day, LOG_EXT, MMAP_EXT, SECONDS_PER_DAY,
 };
 use crate::formater::log_formater;
+
+/// `boost::filesystem::space(...).available >= 1 GiB` in the C++.
+const MIN_FREE_SPACE: u64 = 1024 * 1024 * 1024;
 
 /// `kBufferBlockLength` — the size of the mmap (or heap) cache region.
 pub(crate) const BUFFER_BLOCK_LENGTH: usize = 150 * 1024;
@@ -136,16 +138,13 @@ pub(crate) fn mmap_file_path(config: &XLogConfig) -> PathBuf {
     dir.join(format!("{}.{MMAP_EXT}", config.nameprefix))
 }
 
-/// A per-thread logical tid.
+/// The OS thread id of the calling thread (`sys::thread_id`).
 ///
-/// `std::thread::ThreadId` has no portable numeric representation, so the port
-/// hands out a small monotonic id per thread (the C++ uses the OS tid).
+/// The C++ stamps the real OS tid into every record, so the port does the same
+/// instead of handing out a per-thread counter: logs written by C++ and Rust in
+/// the same process have to be correlatable.
 fn current_tid() -> i64 {
-    static NEXT: AtomicI64 = AtomicI64::new(0);
-    thread_local! {
-        static TID: i64 = NEXT.fetch_add(1, Ordering::Relaxed) + 1;
-    }
-    TID.with(|tid| *tid)
+    crate::sys::thread_id()
 }
 
 /// `XloggerAppender::__GetMarkInfo` — `"[<pid>,<tid>][<YYYY-MM-DD +z HH:MM:SS>]"`.
@@ -433,10 +432,13 @@ impl AppenderInner {
             return false;
         }
 
-        // TODO(port): the C++ also requires `boost::filesystem::space(cachedir)
-        // .available >= 1 GiB`. `std::fs` exposes no free-space query, so the
-        // threshold is not applied here.
-        true
+        // `boost::filesystem::space(cachedir).available >= 1 GiB`.
+        match crate::sys::available_space(cachedir) {
+            Some(available) => available >= MIN_FREE_SPACE,
+            // The query failed: behave like the old port and do not block the
+            // flush on an unknown disk.
+            None => true,
+        }
     }
 
     /// `XloggerAppender::__OpenLogFile`.

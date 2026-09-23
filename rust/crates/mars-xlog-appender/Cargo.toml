@@ -13,6 +13,7 @@ mars-xlog-crypt = { workspace = true }
 mars-xlog-buffer = { workspace = true }
 memmap2 = { workspace = true }
 chrono = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

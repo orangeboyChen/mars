@@ -388,6 +388,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "flate2",
+ "libc",
  "mars-xlog-buffer",
  "mars-xlog-core",
  "mars-xlog-crypt",
