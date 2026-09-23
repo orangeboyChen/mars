@@ -92,7 +92,7 @@ impl XloggerCategory {
             if info.pid == -1 && info.tid == -1 && info.maintid == -1 {
                 info.pid = std::process::id() as i64;
                 info.tid = crate::sys::thread_id();
-                info.maintid = info.tid;
+                info.maintid = crate::sys::main_thread_id();
             }
         }
 
@@ -112,6 +112,9 @@ struct Registry {
     next: XloggerHandle,
     categories: HashMap<XloggerHandle, XloggerCategory>,
     by_prefix: HashMap<String, XloggerHandle>,
+    /// The logger handle `0` selects: `SetLevel(0, ..)` in the C++ configures
+    /// the process-wide level, so it has to be reachable.
+    default: XloggerCategory,
 }
 
 fn registry() -> &'static Mutex<Registry> {
@@ -121,6 +124,7 @@ fn registry() -> &'static Mutex<Registry> {
             next: DEFAULT_HANDLE + 1,
             categories: HashMap::new(),
             by_prefix: HashMap::new(),
+            default: XloggerCategory::default(),
         })
     })
 }
@@ -141,9 +145,11 @@ pub fn new_xlogger_instance(config: &XLogConfig, level: LogLevel) -> XloggerHand
         return *handle;
     }
 
-    // The C++ creates the appender instance here and only opens it once; the
-    // port's appender is a singleton, so this is the open call.
-    if appender_open(config.clone()).is_err() {
+    // The C++ creates one appender per instance; the port has a single
+    // process-wide one, so the first caller opens it and every later prefix
+    // shares it (see the module note). An appender that is already open is
+    // therefore not an error here.
+    if crate::appender_get_current_log_path().is_none() && appender_open(config.clone()).is_err() {
         return DEFAULT_HANDLE;
     }
 
@@ -170,8 +176,18 @@ pub fn get_xlogger_instance(nameprefix: &str) -> XloggerHandle {
 /// `mars::xlog::ReleaseXloggerInstance`.
 pub fn release_xlogger_instance(nameprefix: &str) {
     let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(handle) = registry.by_prefix.remove(nameprefix) {
-        registry.categories.remove(&handle);
+    let Some(handle) = registry.by_prefix.remove(nameprefix) else {
+        return;
+    };
+    registry.categories.remove(&handle);
+
+    // The C++ releases the instance's own appender here. With one shared
+    // appender, releasing the last instance is what closes it — otherwise a
+    // later `new_xlogger_instance` would find it still open and the
+    // release/recreate lifecycle could not work.
+    if registry.categories.is_empty() {
+        drop(registry);
+        crate::appender_close();
     }
 }
 
@@ -182,6 +198,12 @@ fn with_category<R>(handle: XloggerHandle, f: impl FnOnce(&XloggerCategory) -> R
         .categories
         .get(&handle)
         .map(f)
+}
+
+/// Runs `f` against the default logger (handle `0`).
+fn default_category<R>(f: impl FnOnce(&XloggerCategory) -> R) -> R {
+    let registry = registry().lock().unwrap_or_else(|e| e.into_inner());
+    f(&registry.default)
 }
 
 fn with_category_mut(handle: XloggerHandle, f: impl FnOnce(&mut XloggerCategory)) {
@@ -196,26 +218,47 @@ fn with_category_mut(handle: XloggerHandle, f: impl FnOnce(&mut XloggerCategory)
 }
 
 /// `mars::xlog::XloggerWrite`.
+///
+/// Handle `0` uses the default logger. An unknown non-zero handle (one whose
+/// instance was released) writes nothing: the module promises that a stale
+/// handle is a no-op, not a fall back to the default logger.
 pub fn xlogger_write(handle: XloggerHandle, info: Option<&XLoggerInfo>, log: Option<&str>) -> bool {
-    match with_category(handle, |category| category.write(info, log)) {
-        Some(written) => written,
-        // Handle 0 (or a stale one): the process-wide appender, no level filter.
-        None => appender_write(info, log.unwrap_or("NULL == _log")),
+    if handle == DEFAULT_HANDLE {
+        return default_category(|category| category.write(info, log));
     }
+    with_category(handle, |category| category.write(info, log)).unwrap_or(false)
 }
 
 /// `mars::xlog::IsEnabledFor`.
+///
+/// `false` for an unknown non-zero handle, so nothing is written through it.
 pub fn is_enabled_for(handle: XloggerHandle, level: LogLevel) -> bool {
-    with_category(handle, |category| category.is_enabled_for(level)).unwrap_or(true)
+    if handle == DEFAULT_HANDLE {
+        return default_category(|category| category.is_enabled_for(level));
+    }
+    with_category(handle, |category| category.is_enabled_for(level)).unwrap_or(false)
 }
 
 /// `mars::xlog::GetLevel`.
-pub fn get_level(handle: XloggerHandle) -> LogLevel {
-    with_category(handle, |category| category.level()).unwrap_or(LogLevel::Verbose)
+///
+/// `None` for an unknown non-zero handle.
+pub fn get_level(handle: XloggerHandle) -> Option<LogLevel> {
+    if handle == DEFAULT_HANDLE {
+        return Some(default_category(|category| category.level()));
+    }
+    with_category(handle, |category| category.level())
 }
 
 /// `mars::xlog::SetLevel`.
 pub fn set_level(handle: XloggerHandle, level: LogLevel) {
+    if handle == DEFAULT_HANDLE {
+        registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .default
+            .set_level(level);
+        return;
+    }
     with_category_mut(handle, |category| category.set_level(level));
 }
 
@@ -250,6 +293,16 @@ pub fn set_console_log_open(handle: XloggerHandle, open: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// The appender is a process-wide singleton and the default logger's level
+    /// is global too, so every test here has to run on its own.
+    fn serial() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    }
 
     fn config(prefix: &str, dir: &std::path::Path) -> XLogConfig {
         XLogConfig {
@@ -261,6 +314,7 @@ mod tests {
 
     #[test]
     fn instance_table_is_keyed_by_prefix() {
+        let _guard = serial();
         let dir = tempfile::tempdir().unwrap();
         let first = new_xlogger_instance(&config("p", dir.path()), LogLevel::Info);
         assert_ne!(first, DEFAULT_HANDLE);
@@ -282,6 +336,7 @@ mod tests {
 
     #[test]
     fn empty_logdir_or_prefix_is_rejected() {
+        let _guard = serial();
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
             new_xlogger_instance(&config("", dir.path()), LogLevel::Info),
@@ -294,6 +349,49 @@ mod tests {
     }
 
     #[test]
+    fn a_second_prefix_shares_the_open_appender() {
+        let _guard = serial();
+        let dir = tempfile::tempdir().unwrap();
+        let first = new_xlogger_instance(&config("one", dir.path()), LogLevel::Info);
+        let second = new_xlogger_instance(&config("two", dir.path()), LogLevel::Warn);
+        assert_ne!(first, DEFAULT_HANDLE);
+        assert_ne!(second, DEFAULT_HANDLE);
+        assert_ne!(first, second);
+        assert_eq!(get_level(first), Some(LogLevel::Info));
+        assert_eq!(get_level(second), Some(LogLevel::Warn));
+
+        release_xlogger_instance("one");
+        release_xlogger_instance("two");
+        // The last release closes the shared appender, so the lifecycle can be
+        // repeated.
+        let again = new_xlogger_instance(&config("one", dir.path()), LogLevel::Info);
+        assert_ne!(again, DEFAULT_HANDLE);
+        crate::appender_close();
+    }
+
+    #[test]
+    fn a_stale_handle_writes_nothing() {
+        let _guard = serial();
+        // A handle that was never registered behaves exactly like one whose
+        // instance has been released: no write, no level, no fallback.
+        const STALE: XloggerHandle = 999;
+        assert!(!xlogger_write(STALE, None, Some("dropped")));
+        assert!(!is_enabled_for(STALE, LogLevel::Fatal));
+        assert_eq!(get_level(STALE), None);
+    }
+
+    #[test]
+    fn the_default_handle_has_its_own_level() {
+        let _guard = serial();
+        set_level(DEFAULT_HANDLE, LogLevel::Error);
+        assert_eq!(get_level(DEFAULT_HANDLE), Some(LogLevel::Error));
+        assert!(!is_enabled_for(DEFAULT_HANDLE, LogLevel::Warn));
+        assert!(is_enabled_for(DEFAULT_HANDLE, LogLevel::Error));
+        set_level(DEFAULT_HANDLE, LogLevel::Verbose);
+        assert!(is_enabled_for(DEFAULT_HANDLE, LogLevel::Verbose));
+    }
+
+    #[test]
     fn level_filter_follows_the_cpp_rule() {
         let mut category = XloggerCategory::default();
         category.set_level(LogLevel::Warn);
@@ -301,6 +399,6 @@ mod tests {
         assert!(category.is_enabled_for(LogLevel::Warn));
         assert!(!category.is_enabled_for(LogLevel::Info));
         assert!(!category.is_enabled_for(LogLevel::Verbose));
-        assert_eq!(get_level(12345), LogLevel::Verbose, "unknown handle");
+        assert_eq!(get_level(12345), None, "unknown handle");
     }
 }

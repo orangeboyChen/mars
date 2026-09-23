@@ -929,9 +929,18 @@ impl Appender {
         &mut self,
         mode: AppenderMode,
     ) -> Result<(), crate::config::AppenderError> {
+        let previous = self.lock().config.mode;
         self.lock().config.mode = mode;
         if mode == AppenderMode::Async {
-            self.start_thread()?;
+            if let Err(err) = self.start_thread() {
+                // The thread could not be created: leaving the appender in
+                // async mode would buffer every record into a channel whose
+                // receiver is dropped, and neither `flush` nor `close` could
+                // recover them. Roll back to the mode that still works.
+                self.lock().config.mode = previous;
+                self.lock().tx = None;
+                return Err(err);
+            }
         }
         self.lock().notify();
         Ok(())

@@ -11,33 +11,16 @@
 //!
 //! Everything is lock-free and `Send + Sync`; there is no `unsafe` here.
 
-use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Level below which records are dropped. Mirrors the C++ global in
 /// `xlogger.cc`; `MarsLevelVerbose` (0) means "log everything".
 static MIN_LEVEL: AtomicI32 = AtomicI32::new(0);
 
-/// Source of the thread ids reported in `XLoggerInfo::tid`. Rust has no portable
-/// numeric thread id, so ids are handed out in "first thread to log wins" order,
-/// starting at 1.
-static NEXT_TID: AtomicI64 = AtomicI64::new(1);
-
-/// Lazily becomes the id of the first thread that logs, mirroring
-/// `xlogger_maintid()`.
-static MAIN_TID: OnceLock<i64> = OnceLock::new();
-
-thread_local! {
-    /// Id of the calling thread, assigned on first use.
-    static TID: i64 = {
-        let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed);
-        // Best-effort: the first thread to log is treated as the main thread.
-        let _ = MAIN_TID.set(tid);
-        tid
-    };
-}
-
+/// `xlogger_maintid()` — see [`mars_xlog_appender::main_thread_id`], which
+/// captures the first caller once so worker threads still report the real main
+/// thread id.
 /// Sets the minimum level that [`level_enabled`] lets through.
 ///
 /// Levels below `kLevelVerbose` (i.e. negative) clamp to "log everything"; any
@@ -63,16 +46,15 @@ pub fn pid() -> i64 {
     i64::from(std::process::id() as i32)
 }
 
-/// `xlogger_tid()` — a stable per-thread number, assigned on first use.
+/// `xlogger_tid()` — the OS thread id, so records written through the FFI can
+/// be correlated with the ones the C++ wrote in the same process.
 pub fn tid() -> i64 {
-    TID.with(|tid| *tid)
+    mars_xlog_appender::thread_id()
 }
 
-/// `xlogger_maintid()` — the id of the first thread that logged. Falls back to
-/// the calling thread's id when nothing has been logged yet, so the field is
-/// never 0.
+/// `xlogger_maintid()` — the OS id of the process main thread.
 pub fn main_tid() -> i64 {
-    *MAIN_TID.get_or_init(tid)
+    mars_xlog_appender::main_thread_id()
 }
 
 /// `gettimeofday(&info.timeval, NULL)` — seconds + microseconds since the epoch.
@@ -88,9 +70,20 @@ pub fn now_timeval() -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// The level filter is process-global, so the tests that touch it must not
+    /// run concurrently.
+    fn level_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    }
 
     #[test]
     fn default_logs_everything() {
+        let _guard = level_lock();
         set_min_level(0);
         for level in 0..=5 {
             assert!(
@@ -102,6 +95,7 @@ mod tests {
 
     #[test]
     fn higher_level_gates_lower_records() {
+        let _guard = level_lock();
         set_min_level(3);
         assert!(!level_enabled(0));
         assert!(!level_enabled(2));
@@ -112,6 +106,7 @@ mod tests {
 
     #[test]
     fn level_none_disables_everything() {
+        let _guard = level_lock();
         set_min_level(6);
         for level in 0..=5 {
             assert!(
@@ -124,6 +119,7 @@ mod tests {
 
     #[test]
     fn negative_level_clamps_to_verbose() {
+        let _guard = level_lock();
         set_min_level(-7);
         assert_eq!(min_level(), 0);
         assert!(level_enabled(0));

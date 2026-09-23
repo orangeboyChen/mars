@@ -58,7 +58,12 @@ CASES = [
 # key. zstd is excluded: the repo vendors 1.4.4 while the Rust side builds
 # 1.5.7.
 def byte_exact(case: dict) -> bool:
-    return case["crypt"] == 0 and case["mode"] == "zlib"
+    if case["crypt"] == 1:
+        # Each side generates an ephemeral client key, so nothing is stable.
+        return False
+    # Sync records are stored verbatim — no compressor is involved — so the
+    # zstd version mismatch does not apply to them.
+    return case["mode"] == "zlib" or case["sync"] == 1
 
 
 def main() -> int:

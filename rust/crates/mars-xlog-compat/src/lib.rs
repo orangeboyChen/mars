@@ -82,9 +82,14 @@ fn number<T: std::str::FromStr>(opts: &Opts, key: &str, default: T) -> Result<T,
 pub fn normalize_for_compare(data: &[u8], mask_pubkey: bool) -> Vec<u8> {
     let mut out = data.to_vec();
     let mut offset = 0;
-    let mut seq: u16 = 1;
+    let mut base: Option<u16> = None;
     while offset + HEADER_LEN + TAILER_LEN <= out.len() {
-        out[offset + 1..offset + 3].copy_from_slice(&seq.to_le_bytes());
+        let seq = u16::from_le_bytes(out[offset + 1..offset + 3].try_into().expect("slice of 2"));
+        // Rebase the process-global starting value, but keep the deltas: a
+        // duplicated, skipped or out-of-order sequence still shows up.
+        let rebase = *base.get_or_insert(seq);
+        out[offset + 1..offset + 3]
+            .copy_from_slice(&seq.wrapping_sub(rebase).wrapping_add(1).to_le_bytes());
         out[offset + 3] = 0;
         out[offset + 4] = 0;
         if mask_pubkey {
@@ -93,7 +98,6 @@ pub fn normalize_for_compare(data: &[u8], mask_pubkey: bool) -> Vec<u8> {
         let length = u32::from_le_bytes(out[offset + 5..offset + 9].try_into().expect("slice of 4"))
             as usize;
         offset += HEADER_LEN + length + TAILER_LEN;
-        seq = seq.wrapping_add(1);
     }
     out
 }

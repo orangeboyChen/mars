@@ -11,6 +11,7 @@
 #![allow(unsafe_code)]
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// The OS thread id of the calling thread.
 ///
@@ -66,6 +67,17 @@ pub fn thread_id() -> i64 {
         // least stable and non-zero.
         std::process::id() as i64
     }
+}
+
+/// `xlogger_maintid()` — the id of the thread that first called this, i.e. the
+/// process main thread for every realistic caller.
+///
+/// Captured once so that a record written on a worker thread still reports the
+/// real main thread id (`XloggerAppender` marks records whose `tid == maintid`
+/// with a `*`).
+pub fn main_thread_id() -> i64 {
+    static MAIN: OnceLock<i64> = OnceLock::new();
+    *MAIN.get_or_init(thread_id)
 }
 
 /// Free space of the filesystem holding `path`, in bytes.

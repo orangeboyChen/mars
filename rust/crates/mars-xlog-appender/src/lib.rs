@@ -68,6 +68,7 @@ pub use formater::log_formater;
 /// Re-exported so callers (and the FFI layer) do not have to depend on
 /// `mars-xlog-buffer` just to build a [`XLogConfig`].
 pub use mars_xlog_buffer::CompressMode;
+pub use sys::{available_space, main_thread_id, thread_id};
 
 use appender::Appender;
 
