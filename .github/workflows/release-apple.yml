@@ -1,0 +1,78 @@
+name: Release MarsXlog.xcframework
+
+# Builds MarsXlog.xcframework (iOS device arm64 + iOS simulator arm64/x86_64)
+# and attaches the zip to a GitHub release. The zip is the binary target of
+# Package.swift, so SPM users get the prebuilt framework.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# or trigger it manually with a version input.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag, e.g. v0.1.0'
+        required: true
+        default: 'v0.1.0'
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  xcframework:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show build environment
+        run: |
+          xcodebuild -version
+          cmake --version | head -1
+          swift --version 2>/dev/null | head -2
+
+      - name: Build MarsXlog.xcframework
+        run: |
+          cd mars
+          python3 build_xcframework.py "$VERSION" --zip
+        env:
+          VERSION: ${{ github.ref_name }}
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          ZIP=mars/cmake_build/XCFramework/MarsXlog.xcframework.zip
+          CHECKSUM=$(swift package compute-checksum "$ZIP")
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "### MarsXlog.xcframework" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "checksum: $CHECKSUM" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Update \`Package.swift\` with this checksum before tagging the next version."
+
+      - name: Verify Package.swift checksum
+        # Guards against releasing a zip whose checksum no longer matches Package.swift
+        if: hashFiles('Package.swift') != ''
+        run: |
+          ZIP_CHECKSUM="${{ steps.checksum.outputs.checksum }}"
+          PKG_CHECKSUM=$(sed -n 's/.*checksum: *"\([a-f0-9]*\)".*/\1/p' Package.swift)
+          echo "zip: $ZIP_CHECKSUM"
+          echo "Package.swift: $PKG_CHECKSUM"
+          if [ -n "$PKG_CHECKSUM" ] && [ "$ZIP_CHECKSUM" != "$PKG_CHECKSUM" ]; then
+            echo "::warning::Package.swift checksum is out of date, update it to $ZIP_CHECKSUM"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MarsXlog.xcframework
+          path: mars/cmake_build/XCFramework/MarsXlog.xcframework.zip
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}"
+          ZIP=mars/cmake_build/XCFramework/MarsXlog.xcframework.zip
+          gh release create "$TAG" --title "$TAG" --generate-notes "$ZIP" || \
+            gh release upload "$TAG" "$ZIP" --clobber
