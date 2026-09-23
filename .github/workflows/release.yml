@@ -227,7 +227,16 @@ jobs:
         run: |
           cd dist
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" *.aar "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP" --clobber
+            # publish every artifact once, never overwrite: the SPM checksum in
+            # Package.swift is bound to the zip that was published for the tag
+            EXISTING=$(gh release view "$TAG" --json assets -q '.assets[].name')
+            for ARTIFACT in *.aar "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP"; do
+              if grep -qx "$ARTIFACT" <<< "$EXISTING"; then
+                echo "skip $ARTIFACT, already published for $TAG"
+              else
+                gh release upload "$TAG" "$ARTIFACT"
+              fi
+            done
           else
             gh release create "$TAG" --target "$SHA" --title "$TAG" --generate-notes \
               *.aar "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP"
