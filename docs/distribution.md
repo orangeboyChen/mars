@@ -36,12 +36,14 @@ needed on the consumer side. `MarsXlog.h` is an Objective-C wrapper of
 
 ### Releasing a new version
 
-1. `cd mars && python3 build_xcframework.py --zip` (locally, to get the checksum)
-   or push a tag and read the checksum from the workflow summary.
-2. Update `checksum:` in `Package.swift`.
-3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+1. Run **Actions → Release → Run workflow** and pick `major` / `minor` /
+   `patch`, or type the version directly (`1.2.3` and `v1.2.3` both work).
+   The workflow builds everything, creates the `vX.Y.Z` tag and the release,
+   and commits the matching `url` / `checksum` into `Package.swift`.
+2. Pushing a `v*` tag yourself does the same thing for that tag.
 
-`.github/workflows/release-apple.yml` builds the xcframework on a macOS runner,
+`.github/workflows/release.yml` builds the xcframework (macOS runner) and the
+Android AARs (Linux runner),
 zips it and attaches `MarsXlog.xcframework.zip` to the GitHub release. It also
 prints the checksum and warns when `Package.swift` is out of date. Release
 assets are never rebuilt: if the tag already has the artefact the job is a
@@ -51,8 +53,8 @@ no-op, which keeps the checksum in `Package.swift` valid.
 
 `jitpack.yml` publishes the two library modules. JitPack has an Android SDK but
 no NDK, so the native libraries built by
-`.github/workflows/release-android.yml` are downloaded from the release of the
-same tag before the AARs are assembled.
+`.github/workflows/release.yml` are downloaded from the release of the same
+tag before the AARs are assembled.
 
 ```gradle
 allprojects {
