@@ -35,8 +35,8 @@ let package = Package(
         // Prebuilt binary: ios-arm64 + ios-arm64_x86_64-simulator.
         .binaryTarget(
             name: "MarsXlogBinary",
-            url: "https://github.com/orangeboyChen/mars/releases/download/v0.1.2/MarsXlog.xcframework.zip",
-            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+            url: "https://github.com/orangeboyChen/mars/releases/download/v2.0.0/MarsXlog.xcframework.zip",
+            checksum: "887078a37ec0ec44648436049fc64c1891a96b1c79a151bb7a72875ea1446930"
         ),
         // Thin Swift wrapper: a binary target can not declare dependencies on
         // system libraries, and the static library needs libc++ and libz, so
