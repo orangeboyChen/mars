@@ -8,7 +8,8 @@ name: Release
 # patch bump, or by typing a version directly - "1.2.3" and "v1.2.3" are both
 # accepted. The git tag and the GitHub release always use the "v" prefix.
 #
-# Pushing a "v*" tag runs the same jobs and publishes the artifacts for it.
+# workflow_dispatch only: the workflow must live on the default branch, and the
+# tag is created by this workflow itself, so pushing it never re-triggers a run.
 
 on:
   workflow_dispatch:
@@ -25,9 +26,6 @@ on:
       version:
         description: 'Explicit version, e.g. 1.2.3 or v1.2.3 (overrides the bump)'
         required: false
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
@@ -54,15 +52,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_BUMP: ${{ inputs.bump }}
-          REF_NAME: ${{ github.ref_name }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
           if [ -n "${INPUT_VERSION:-}" ]; then
             VERSION="${INPUT_VERSION#v}"
-          elif [ "$EVENT_NAME" = "push" ]; then
-            VERSION="${REF_NAME#v}"
           else
             LAST=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
             [ -n "$LAST" ] || LAST=v0.0.0
