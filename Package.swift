@@ -1,18 +1,25 @@
 // swift-tools-version: 5.9
 //
-//  Mars — Swift Package Manager distribution (Apple platforms)
+//  Mars - Swift Package Manager distribution (iOS)
 //
-//  Usage:
-//      .package(url: "https://github.com/orangeboyChen/mars", from: "0.1.0")
+//      .package(url: "https://github.com/orangeboyChen/mars", from: "0.1.2")
 //
-//  The package ships a prebuilt MarsXlog.xcframework (binary target) built by
-//  .github/workflows/release-apple.yml, so no CMake / OpenSSL toolchain is
-//  needed on the consumer side.
+//  and then
 //
-//  Swift:
 //      import MarsXlog
-//      MarsXlog.open(logDir: dir, namePrefix: "Test")
-//      MarsXlog.log(level: .info, tag: "demo", message: "hello")
+//
+//      let config = MarsXlogOpenConfig()
+//      config.logDir = logDir
+//      config.cacheDir = cacheDir
+//      config.namePrefix = "Ham"
+//      config.pubKey = "..."
+//      MarsXlog.open(config)
+//
+//      MarsXlog.info(module: "Net", function: #function, message: "hello")
+//      MarsXlog.flush()
+//
+//  The package ships a prebuilt MarsXlog.xcframework built by
+//  .github/workflows/release.yml, so consumers need neither CMake nor OpenSSL.
 //
 import PackageDescription
 
@@ -25,10 +32,23 @@ let package = Package(
         .library(name: "MarsXlog", targets: ["MarsXlog"])
     ],
     targets: [
+        // Prebuilt binary: ios-arm64 + ios-arm64_x86_64-simulator.
         .binaryTarget(
+            name: "MarsXlogBinary",
+            url: "https://github.com/orangeboyChen/mars/releases/download/v0.1.2/MarsXlog.xcframework.zip",
+            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+        ),
+        // Thin Swift wrapper: a binary target can not declare dependencies on
+        // system libraries, and the static library needs libc++ and libz, so
+        // they are declared here and propagated to every consumer.
+        .target(
             name: "MarsXlog",
-            url: "https://github.com/orangeboyChen/mars/releases/download/v0.1.0/MarsXlog.xcframework.zip",
-            checksum: "70b43d3c93ea50895347e8b480120da3a99e92da5fc268808cc60266ed8bd082"
+            dependencies: ["MarsXlogBinary"],
+            path: "Sources/MarsXlog",
+            linkerSettings: [
+                .linkedLibrary("c++"),
+                .linkedLibrary("z"),
+            ]
         )
     ]
 )

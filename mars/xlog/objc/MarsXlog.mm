@@ -13,6 +13,7 @@
 #import "MarsXlog.h"
 
 #include <sys/time.h>
+#include <sys/xattr.h>
 
 #import <mars/comm/xlogger/xloggerbase.h>
 #import <mars/xlog/appender.h>
@@ -20,8 +21,8 @@
 using namespace mars::xlog;
 
 static TLogLevel MarsXlogLevelToTLogLevel(MarsXlogLevel level) {
+    // MarsXlogLevelAll and MarsXlogLevelVerbose share the same value (0)
     switch (level) {
-        // MarsXlogLevelAll and MarsXlogLevelVerbose share the same value (0)
         case MarsXlogLevelVerbose:
             return kLevelAll;
         case MarsXlogLevelDebug:
@@ -40,22 +41,50 @@ static TLogLevel MarsXlogLevelToTLogLevel(MarsXlogLevel level) {
     return kLevelInfo;
 }
 
+static NSString* MarsXlogUTF8(NSString* _Nullable value) {
+    return value ? value : @"";
+}
+
+@implementation MarsXlogOpenConfig
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _logDir = @"";
+        _cacheDir = @"";
+        _namePrefix = @"";
+        _pubKey = @"";
+        _mode = MarsXlogAppenderModeAsync;
+        _compressMode = MarsXlogCompressModeZlib;
+        _level = MarsXlogLevelInfo;
+        _consoleLogEnabled = NO;
+    }
+    return self;
+}
+
+@end
+
 @implementation MarsXlog
 
-+ (void)openWithLogDir:(NSString*)logDir
-            namePrefix:(NSString*)namePrefix
-                  mode:(MarsXlogAppenderMode)mode
-          compressMode:(MarsXlogCompressMode)compressMode {
-    XLogConfig config;
-    config.mode_ = (mode == MarsXlogAppenderModeSync) ? kAppenderSync : kAppenderAsync;
-    config.logdir_ = logDir ? [logDir UTF8String] : "";
-    config.nameprefix_ = namePrefix ? [namePrefix UTF8String] : "";
-    config.compress_mode_ = (compressMode == MarsXlogCompressModeZstd) ? kZstd : kZlib;
-    appender_open(config);
++ (void)openWithConfig:(MarsXlogOpenConfig*)config {
+    XLogConfig xlogConfig;
+    xlogConfig.mode_ = (config.mode == MarsXlogAppenderModeSync) ? kAppenderSync : kAppenderAsync;
+    xlogConfig.logdir_ = MarsXlogUTF8(config.logDir).UTF8String;
+    xlogConfig.nameprefix_ = MarsXlogUTF8(config.namePrefix).UTF8String;
+    xlogConfig.pub_key_ = MarsXlogUTF8(config.pubKey).UTF8String;
+    xlogConfig.cachedir_ = MarsXlogUTF8(config.cacheDir).UTF8String;
+    xlogConfig.compress_mode_ = (config.compressMode == MarsXlogCompressModeZstd) ? kZstd : kZlib;
+    appender_open(xlogConfig);
+
+    xlogger_SetLevel(MarsXlogLevelToTLogLevel(config.level));
+    appender_set_console_log(config.consoleLogEnabled ? true : false);
 }
 
 + (void)openWithLogDir:(NSString*)logDir namePrefix:(NSString*)namePrefix {
-    [self openWithLogDir:logDir namePrefix:namePrefix mode:MarsXlogAppenderModeAsync compressMode:MarsXlogCompressModeZlib];
+    MarsXlogOpenConfig* config = [[MarsXlogOpenConfig alloc] init];
+    config.logDir = logDir;
+    config.namePrefix = namePrefix;
+    [self openWithConfig:config];
 }
 
 + (void)close {
@@ -86,20 +115,30 @@ static TLogLevel MarsXlogLevelToTLogLevel(MarsXlogLevel level) {
     appender_set_max_alive_duration(maxAliveDuration);
 }
 
++ (BOOL)setExcludedFromBackup:(BOOL)exclude forPath:(NSString*)path {
+    if (path.length == 0) {
+        return NO;
+    }
+    static const char* attrName = "com.apple.MobileBackup";
+    u_int8_t attrValue = exclude ? 1 : 0;
+    return setxattr(path.fileSystemRepresentation, attrName, &attrValue, sizeof(attrValue), 0, 0) == 0;
+}
+
 + (void)logWithLevel:(MarsXlogLevel)level
-                 tag:(NSString*)tag
+              module:(NSString*)module
                 file:(const char*)file
-            function:(const char*)function
                 line:(int)line
+            function:(const char*)function
              message:(NSString*)message {
-    if (!xlogger_IsEnabledFor(MarsXlogLevelToTLogLevel(level))) {
+    TLogLevel logLevel = MarsXlogLevelToTLogLevel(level);
+    if (!xlogger_IsEnabledFor(logLevel)) {
         return;
     }
 
     XLoggerInfo info;
     memset(&info, 0, sizeof(info));
-    info.level = MarsXlogLevelToTLogLevel(level);
-    info.tag = tag ? [tag UTF8String] : "";
+    info.level = logLevel;
+    info.tag = MarsXlogUTF8(module).UTF8String;
     info.filename = file ? file : "";
     info.func_name = function ? function : "";
     info.line = line;
@@ -108,11 +147,39 @@ static TLogLevel MarsXlogLevelToTLogLevel(MarsXlogLevel level) {
     info.maintid = -1;
     gettimeofday(&info.timeval, NULL);
 
-    xlogger_Write(&info, message ? [message UTF8String] : "");
+    xlogger_Write(&info, MarsXlogUTF8(message).UTF8String);
 }
 
-+ (void)logWithLevel:(MarsXlogLevel)level tag:(NSString*)tag message:(NSString*)message {
-    [self logWithLevel:level tag:tag file:nullptr function:nullptr line:0 message:message];
++ (void)logWithLevel:(MarsXlogLevel)level
+              module:(NSString*)module
+            function:(NSString*)function
+             message:(NSString*)message {
+    [self logWithLevel:level
+                module:module
+                  file:nullptr
+                  line:0
+              function:function ? function.UTF8String : nullptr
+               message:message];
+}
+
++ (void)logWithLevel:(MarsXlogLevel)level module:(NSString*)module message:(NSString*)message {
+    [self logWithLevel:level module:module function:nil message:message];
+}
+
++ (void)infoWithModule:(NSString*)module function:(NSString*)function message:(NSString*)message {
+    [self logWithLevel:MarsXlogLevelInfo module:module function:function message:message];
+}
+
++ (void)warningWithModule:(NSString*)module function:(NSString*)function message:(NSString*)message {
+    [self logWithLevel:MarsXlogLevelWarning module:module function:function message:message];
+}
+
++ (void)errorWithModule:(NSString*)module function:(NSString*)function message:(NSString*)message {
+    [self logWithLevel:MarsXlogLevelError module:module function:function message:message];
+}
+
++ (void)fatalWithModule:(NSString*)module function:(NSString*)function message:(NSString*)message {
+    [self logWithLevel:MarsXlogLevelFatal module:module function:function message:message];
 }
 
 @end

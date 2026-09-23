@@ -12,8 +12,24 @@
 
 //
 //  MarsXlog.h
-//  Objective-C interface of mars xlog, used by the Swift Package (binary target)
-//  so that Swift code can `import MarsXlog` without C++ interop.
+//  Objective-C interface of mars xlog.
+//
+//  It is the public API of the MarsXlog Swift Package (binary target) and mirrors
+//  the xlog API used by app code (XLogConfig + appender_open/close/flush +
+//  xlogger_SetLevel + appender_set_console_log), so Swift can log without C++
+//  interop:
+//
+//      import MarsXlog
+//
+//      let config = MarsXlogOpenConfig()
+//      config.logDir = logDir
+//      config.cacheDir = cacheDir
+//      config.namePrefix = "Ham"
+//      config.pubKey = "..."
+//      MarsXlog.open(config)
+//
+//      MarsXlog.info(module: "Net", function: #function, message: "hello")
+//      MarsXlog.flush()
 //
 
 #import <Foundation/Foundation.h>
@@ -41,20 +57,35 @@ typedef NS_ENUM(NSUInteger, MarsXlogCompressMode) {
     MarsXlogCompressModeZstd,
 };
 
-/// Objective-C wrapper of `mars::xlog`, the high performance logging module of Mars.
+/// Configuration of `+[MarsXlog openWithConfig:]`, the counterpart of `mars::xlog::XLogConfig`.
+@interface MarsXlogOpenConfig : NSObject
+
+/// Directory the mmap log files are written to. Must exist.
+@property (nonatomic, copy) NSString* logDir;
+/// Cache directory used by the appender. Optional.
+@property (nonatomic, copy) NSString* cacheDir;
+/// Prefix of the log file name, e.g. "Ham".
+@property (nonatomic, copy) NSString* namePrefix;
+/// Public key used to encrypt the log files. Optional.
+@property (nonatomic, copy) NSString* pubKey;
+/// Async (default) or sync appender.
+@property (nonatomic, assign) MarsXlogAppenderMode mode;
+/// Compression used when a log file is converted, zlib (default) or zstd.
+@property (nonatomic, assign) MarsXlogCompressMode compressMode;
+/// Level applied right after open, `MarsXlogLevelInfo` by default.
+@property (nonatomic, assign) MarsXlogLevel level;
+/// Mirror the log to the console (Xcode console / os_log).
+@property (nonatomic, assign) BOOL consoleLogEnabled;
+
+@end
+
+/// Objective-C wrapper of `mars::xlog`.
 @interface MarsXlog : NSObject
 
-/// Open the log appender. Must be called before writing any log.
-/// @param logDir    directory where the mmap log files are stored, must exist.
-/// @param namePrefix  prefix of the log file name, e.g. "Test".
-/// @param mode      async (recommended) or sync.
-/// @param compressMode zlib (default) or zstd, only used when the log file is converted.
-+ (void)openWithLogDir:(NSString*)logDir
-            namePrefix:(NSString*)namePrefix
-                  mode:(MarsXlogAppenderMode)mode
-          compressMode:(MarsXlogCompressMode)compressMode NS_SWIFT_NAME(open(logDir:namePrefix:mode:compressMode:));
+/// Open the appender. Has to be called before any log is written.
++ (void)openWithConfig:(MarsXlogOpenConfig*)config NS_SWIFT_NAME(open(_:));
 
-/// Open with the default configuration: async mode + zlib compression.
+/// Open with the defaults: async appender, zlib, info level, console off.
 + (void)openWithLogDir:(NSString*)logDir namePrefix:(NSString*)namePrefix NS_SWIFT_NAME(open(logDir:namePrefix:));
 
 /// Flush and close the appender.
@@ -66,28 +97,53 @@ typedef NS_ENUM(NSUInteger, MarsXlogCompressMode) {
 /// Flush synchronously.
 + (void)flushSync;
 
-/// Filter logs below the given level. Debug level in debug build, info level in release build is a common choice.
+/// Filter out every log below `level`.
 + (void)setLevel:(MarsXlogLevel)level;
 
-/// Mirror the log to the console (Xcode console / os_log).
 + (void)setConsoleLogEnabled:(BOOL)enabled;
 
-/// Split log files once a single file is larger than maxByteSize, 0 means never split.
+/// Split the log file once a single file grows past `maxByteSize`, 0 means never split.
 + (void)setMaxFileSize:(uint64_t)maxByteSize;
 
-/// Max alive duration of a single log file in seconds, default is 10 days.
+/// Max alive duration of a single log file in seconds, 10 days by default.
 + (void)setMaxAliveDuration:(long)maxAliveDuration;
+
+/// Mark `path` as "do not back up" (`com.apple.MobileBackup`), which is what
+/// apps do with their log and cache directories. Returns NO if the attribute
+/// could not be set.
++ (BOOL)setExcludedFromBackup:(BOOL)exclude forPath:(NSString*)path NS_SWIFT_NAME(setExcludedFromBackup(_:forPath:));
+
+/// Write one log record with full source location.
++ (void)logWithLevel:(MarsXlogLevel)level
+              module:(NSString*)module
+                file:(const char* _Nullable)file
+                line:(int)line
+            function:(const char* _Nullable)function
+             message:(NSString*)message NS_SWIFT_NAME(log(level:module:file:line:function:message:));
 
 /// Write one log record.
 + (void)logWithLevel:(MarsXlogLevel)level
-                 tag:(NSString*)tag
-                file:(const char* _Nullable)file
-            function:(const char* _Nullable)function
-                line:(int)line
-             message:(NSString*)message NS_SWIFT_NAME(log(level:tag:file:function:line:message:));
+              module:(NSString*)module
+            function:(NSString* _Nullable)function
+             message:(NSString*)message NS_SWIFT_NAME(log(level:module:function:message:));
 
-/// Write one log record without file / function / line information.
-+ (void)logWithLevel:(MarsXlogLevel)level tag:(NSString*)tag message:(NSString*)message NS_SWIFT_NAME(log(level:tag:message:));
+/// Write one log record without source location.
++ (void)logWithLevel:(MarsXlogLevel)level
+              module:(NSString*)module
+             message:(NSString*)message NS_SWIFT_NAME(log(level:module:message:));
+
++ (void)infoWithModule:(NSString*)module
+              function:(NSString* _Nullable)function
+               message:(NSString*)message NS_SWIFT_NAME(info(module:function:message:));
++ (void)warningWithModule:(NSString*)module
+                 function:(NSString* _Nullable)function
+                  message:(NSString*)message NS_SWIFT_NAME(warning(module:function:message:));
++ (void)errorWithModule:(NSString*)module
+               function:(NSString* _Nullable)function
+                message:(NSString*)message NS_SWIFT_NAME(error(module:function:message:));
++ (void)fatalWithModule:(NSString*)module
+               function:(NSString* _Nullable)function
+                message:(NSString*)message NS_SWIFT_NAME(fatal(module:function:message:));
 
 @end
 

@@ -13,11 +13,30 @@ prebuilt `MarsXlog.xcframework` binary target:
 ```swift
 import MarsXlog
 
-MarsXlog.open(logDir: logDir, namePrefix: "Test")
-MarsXlog.setLevel(.debug)
-MarsXlog.log(level: .info, tag: "demo", message: "hello mars")
+let config = MarsXlogOpenConfig()
+config.logDir = logDir
+config.cacheDir = cacheDir
+config.namePrefix = "Ham"
+config.pubKey = "..."
+config.level = .debug
+config.consoleLogEnabled = true
+MarsXlog.open(config)
+MarsXlog.setExcludedFromBackup(true, forPath: logDir)
+
+MarsXlog.info(module: "Net", function: #function, message: "hello")
+MarsXlog.log(level: .error, module: "Net", function: #function, message: "boom")
 MarsXlog.flush()
+MarsXlog.close()
 ```
+
+The API mirrors what app code does with `mars::xlog` directly: `XLogConfig`
+(`logDir` / `cacheDir` / `namePrefix` / `pubKey`), `appender_open/close/
+flush/flushSync`, `xlogger_SetLevel` and `appender_set_console_log`.
+
+`Package.swift` has one wrapper target on top of the binary target: a binary
+target cannot declare system library dependencies, and the static library needs
+`libc++` and `libz`, so they are declared with `linkerSettings` on the wrapper
+and propagated to consumers.
 
 Slices:
 
