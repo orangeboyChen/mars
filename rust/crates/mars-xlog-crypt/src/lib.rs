@@ -159,12 +159,12 @@ fn get_seq(is_async: bool) -> u16 {
 /// mirroring the C++ early return.
 fn hex_to_buffer(s: &str) -> Option<Vec<u8>> {
     let bytes = s.as_bytes();
-    if bytes.is_empty() || bytes.len() % 2 != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) {
         return None;
     }
 
     let mut out = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let hi = hex_nibble(pair[0])?;
         let lo = hex_nibble(pair[1])?;
         out.push((hi << 4) | lo);
@@ -761,7 +761,7 @@ mod tests {
 
         // 3 whole blocks were encrypted => ciphertext differs everywhere.
         assert_ne!(out, payload);
-        for (i, block) in payload.chunks_exact(TEA_BLOCK_LEN).enumerate() {
+        for (i, block) in payload.as_chunks::<TEA_BLOCK_LEN>().0.iter().enumerate() {
             let mut expected = [le::read_u32(block, 0), le::read_u32(block, 4)];
             tea_encrypt(&mut expected, &crypt.tea_key_);
             let got = &out[i * TEA_BLOCK_LEN..(i + 1) * TEA_BLOCK_LEN];
