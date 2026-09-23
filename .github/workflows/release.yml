@@ -144,12 +144,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install Android SDK components
+        # The runner image already ships the Android SDK command line tools.
+        # android-actions/setup-android is avoided because it still tries to
+        # install the removed "tools" package and fails on current images.
         run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
           yes | sdkmanager --licenses > /dev/null
           sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.1.12297006"
+          echo "$ANDROID_HOME/ndk/27.1.12297006"
 
       - name: Build native libraries
         run: |
