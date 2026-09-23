@@ -160,11 +160,16 @@ fn encode(opts: &Opts) -> Result<(), String> {
             bytes.extend_from_slice(block.as_slice());
         }
     } else {
+        let mut buffered = 0;
         for (index, record) in records.iter().enumerate() {
-            if flush_every > 0 && index > 0 && index % flush_every == 0 {
+            // Flush every `flush_every` records instead of testing
+            // `index % flush_every`, which clippy now wants spelled as
+            // `is_multiple_of()` (too new for the toolchains this builds on).
+            if flush_every > 0 && buffered >= flush_every {
                 let mut block = AutoBuffer::new();
                 buffer.flush(&mut region, &mut block);
                 bytes.extend_from_slice(block.as_slice());
+                buffered = 0;
             }
             if !buffer.write(&mut region, record) {
                 return Err(format!(
@@ -173,6 +178,7 @@ fn encode(opts: &Opts) -> Result<(), String> {
                     region_len
                 ));
             }
+            buffered += 1;
         }
         let mut block = AutoBuffer::new();
         buffer.flush(&mut region, &mut block);
@@ -358,17 +364,17 @@ fn inflate_raw(body: &[u8]) -> Result<Vec<u8>, String> {
 /// never encrypted (`LogCrypt::CryptAsyncLog`).
 fn tea_decrypt_all(body: &[u8], key: &[u32; 4]) -> Vec<u8> {
     let mut out = body.to_vec();
-    for block in out.chunks_exact_mut(TEA_BLOCK_LEN) {
-        tea_decrypt(
-            &mut [
-                u32::from_le_bytes(block[0..4].try_into().expect("slice of 4")),
-                u32::from_le_bytes(block[4..8].try_into().expect("slice of 4")),
-            ],
-            key,
-        )
-        .iter()
-        .enumerate()
-        .for_each(|(i, word)| block[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes()));
+    for start in (0..out.len())
+        .step_by(TEA_BLOCK_LEN)
+        .take(out.len() / TEA_BLOCK_LEN)
+    {
+        let mut v = [
+            u32::from_le_bytes(out[start..start + 4].try_into().expect("slice of 4")),
+            u32::from_le_bytes(out[start + 4..start + 8].try_into().expect("slice of 4")),
+        ];
+        for (i, word) in tea_decrypt(&mut v, key).iter().enumerate() {
+            out[start + i * 4..start + i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
     }
     out
 }
