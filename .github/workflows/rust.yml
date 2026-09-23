@@ -91,6 +91,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NDK_VERSION: 27.1.12297006
+      # The runner image already ships the Android SDK; it is pinned here
+      # because the `cargo build` step derives the NDK path from it.
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     strategy:
       fail-fast: false
       matrix:
@@ -104,11 +108,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: android-actions/setup-android@v3
+      # `android-actions/setup-android` is intentionally not used: it installs
+      # the long-removed `tools` SDK package, so its `sdkmanager` call exits
+      # non-zero and the job fails before any Rust code is compiled. The SDK
+      # (and its `sdkmanager`) that the runner image already provides is
+      # enough to install the NDK.
       - name: Install the Android NDK
         run: |
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
+          set -euo pipefail
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" --install "ndk;${NDK_VERSION}"
+          test -d "$ANDROID_HOME/ndk/${NDK_VERSION}"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
