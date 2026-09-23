@@ -20,11 +20,24 @@ use std::sync::OnceLock;
 /// C++ in the same process impossible to correlate.
 pub fn thread_id() -> i64 {
     // The OS tid cannot change for a thread, so it is looked up once and then
-    // cached: this is called for every single log record.
+    // cached: this is called for every single log record. The pid is part of the
+    // cache key because `fork()` invalidates the tid while `pid()` is re-read
+    // every time — logging (child pid, parent tid) would be a pair that cannot
+    // exist, and correlating with the C++ is the point of using the OS tid.
     thread_local! {
-        static TID: i64 = os_thread_id();
+        static TID: std::cell::Cell<(u32, i64)> = const { std::cell::Cell::new((0, 0)) };
     }
-    TID.with(|tid| *tid)
+    let pid = std::process::id();
+    TID.with(|cell| {
+        let (cached_pid, tid) = cell.get();
+        if cached_pid != pid {
+            let tid = os_thread_id();
+            cell.set((pid, tid));
+            tid
+        } else {
+            tid
+        }
+    })
 }
 
 /// The raw OS query behind [`thread_id`].

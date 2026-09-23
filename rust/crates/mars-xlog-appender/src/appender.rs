@@ -143,8 +143,12 @@ fn map_region(file: &File) -> std::io::Result<memmap2::MmapMut> {
 /// `LogBuffer::flush` and `close()` clear the bytes in place, and the file
 /// follows the mapping.
 fn clear_cache_file(path: &Path) {
-    if let Ok(file) = OpenOptions::new().write(true).truncate(true).open(path) {
-        let _ = file.set_len(BUFFER_BLOCK_LENGTH as u64);
+    // Truncate to zero and *keep* it at zero: `set_len` back to the block size
+    // would build the same sparse hole that the pre-allocation below exists to
+    // prevent, and a zero-length file re-arms that pre-allocation on the next
+    // open.
+    if let Ok(mut file) = OpenOptions::new().write(true).truncate(true).open(path) {
+        let _ = file.flush();
     }
 }
 
@@ -253,7 +257,11 @@ struct AppenderInner {
     /// Channel to the async writer thread (replaces `cond_buffer_async_`).
     tx: Option<SyncSender<Msg>>,
     /// Whether the cache region is backed by the mmap file.
+    /// Whether the region is the mmap'd cache file (`true`) or a heap buffer.
     use_mmap: bool,
+    /// Whether this appender owns `<prefix>.mmap3`. `Appender::oneshot` works
+    /// on a file left behind by another process and must never clear it.
+    owns_cache: bool,
 }
 
 impl AppenderInner {
@@ -272,12 +280,13 @@ impl AppenderInner {
         }
     }
 
-    fn notify_close(&self) {
-        // `Close` must not be dropped by the coalescing above, so it blocks
-        // until the queue has room (the receiver is draining).
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Msg::Close);
-        }
+    /// `Close`, which must not be dropped by the coalescing in [`Self::notify`].
+    ///
+    /// Callers must **not** hold the inner lock: the channel is bounded, so
+    /// this can block until the writer thread takes the message, and that
+    /// thread needs the lock to drain.
+    fn close_sender(&self) -> Option<SyncSender<Msg>> {
+        self.tx.clone()
     }
 
     /// `log_buff_->Flush(_out)`.
@@ -761,6 +770,7 @@ impl Appender {
             console_log_open: false,
             tx: None,
             use_mmap,
+            owns_cache: true,
         };
 
         let mut appender = Appender {
@@ -880,6 +890,7 @@ impl Appender {
             console_log_open: false,
             tx: None,
             use_mmap: false,
+            owns_cache: false,
         };
 
         Ok(Appender {
@@ -1005,11 +1016,18 @@ impl Appender {
         // Mirrors the drain in `open`: without a mapping the file keeps its
         // bytes, so it has to be cleared here too or the next start appends
         // the same records again.
-        let (use_mmap, path) = {
+        let (use_mmap, owns_cache, path) = {
             let guard = self.lock();
-            (guard.use_mmap, mmap_file_path(&guard.config))
+            (
+                guard.use_mmap,
+                guard.owns_cache,
+                mmap_file_path(&guard.config),
+            )
         };
-        if !use_mmap {
+        // Only the owner of the cache file may clear it: `Appender::oneshot`
+        // works on another process's file and must leave it alone when it
+        // cannot drain or remove it.
+        if !use_mmap && owns_cache {
             clear_cache_file(&path);
         }
         let mark = mark_info();
@@ -1027,7 +1045,13 @@ impl Appender {
         );
 
         self.lock().log_close = true;
-        self.lock().notify_close();
+        // `sync_channel(1)` makes `send` block, so it must not happen under the
+        // inner lock: the writer thread needs that lock to drain, and the queue
+        // can already be full — the two would wait for each other forever.
+        let close_tx = self.lock().close_sender();
+        if let Some(tx) = close_tx {
+            let _ = tx.send(Msg::Close);
+        }
 
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
@@ -1455,7 +1479,10 @@ mod tests {
             // Drop without `close()` to leave the data in the cache file, like a
             // process that died. The async thread exits when the sender drops.
             appender.lock().log_close = true;
-            appender.lock().notify_close();
+            let close_tx = appender.lock().close_sender();
+            if let Some(tx) = close_tx {
+                let _ = tx.send(Msg::Close);
+            }
             if let Some(handle) = appender.thread.take() {
                 let _ = handle.join();
             }

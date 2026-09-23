@@ -165,7 +165,17 @@ pub fn new_xlogger_instance(config: &XLogConfig, level: LogLevel) -> XloggerHand
     let opened = if crate::appender_get_current_log_path().is_none() {
         match crate::appender_open(config.clone()) {
             Ok(()) => true,
-            Err(_) => return DEFAULT_HANDLE,
+            Err(_) => {
+                // Another thread may have won the race and opened it first.
+                // That is not a failure: this prefix can share the appender, it
+                // just did not open it. Failing here would hand the caller
+                // DEFAULT_HANDLE, whose level is the default one — silently
+                // logging at the wrong level.
+                if crate::appender_get_current_log_path().is_none() {
+                    return DEFAULT_HANDLE;
+                }
+                false
+            }
         }
     } else {
         false

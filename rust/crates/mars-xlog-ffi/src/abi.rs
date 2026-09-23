@@ -69,7 +69,7 @@ pub struct MarsXLogConfig {
     pub mode: c_int,
     /// Mandatory log directory; created if missing.
     pub log_dir: *const c_char,
-    /// Log file name prefix; null / empty keeps the appender default (`"Mars"`).
+    /// Log file name prefix; null / empty is used verbatim, as in the C++ `XLogConfig`.
     pub name_prefix: *const c_char,
     /// 128 hex chars of ECDH pubkey; null / empty disables encryption.
     pub pub_key: *const c_char,
