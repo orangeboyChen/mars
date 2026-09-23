@@ -200,9 +200,12 @@ def build_android(incremental, arch, target_option=''):
     print("use time:%d s" % (int(after_time - before_time)))
     return True
 
+XLOG_ONLY_TARGET = '--target libzstd_static marsxlog'
+
+
 def main(incremental, archs, target_option='', tag=''):
     if not check_ndk_env():
-        return
+        return False
 
     gen_mars_revision_file(SCRIPT_PATH + '/comm', tag)
 
@@ -214,14 +217,25 @@ def main(incremental, archs, target_option='', tag=''):
 
     for arch in archs:
         if not build_android(incremental, arch, target_option):
-            return
+            return False
+    return True
 
 if __name__ == '__main__':
 
+    # `python3 build_android.py <tag> <abi...>` builds the full mars sdk,
+    # `python3 build_android.py <tag> --xlog-only <abi...>` builds mars-xlog only.
+    argv = sys.argv[1:]
+    xlog_only = '--xlog-only' in argv
+    if xlog_only:
+        argv.remove('--xlog-only')
+
     while True:
-        if len(sys.argv) >= 3:
-            archs = sys.argv[2:]
-            main(False, archs, tag=sys.argv[1])
+        if len(argv) >= 2:
+            archs = argv[1:]
+            # CI relies on the exit status: a failed CMake/ndk-build must not
+            # look like a successful build (see .github/workflows/release.yml).
+            if not main(False, archs, target_option=XLOG_ONLY_TARGET if xlog_only else '', tag=argv[0]):
+                sys.exit(1)
             break
         else:
             archs = {'armeabi-v7a', 'arm64-v8a'}

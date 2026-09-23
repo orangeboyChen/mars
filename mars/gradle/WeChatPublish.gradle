@@ -371,7 +371,12 @@ class WeChatAndroidLibraryPublishExtension extends WeChatPublishExtension {
                 title = null
 
                 def classpathFiles = project.files(android.getBootClasspath().join(File.pathSeparator))
-                classpathFiles += project.files(project.configurations.implementation)
+                // 'implementation' is not resolvable on Gradle 7+, use the variant
+                // classpath configuration instead.
+                def compileClasspath = project.configurations.findByName("${variantName}CompileClasspath")
+                if (compileClasspath != null) {
+                    classpathFiles += project.files(compileClasspath)
+                }
                 doFirst { classpath += classpathFiles }
 
                 source = variant.javaCompile.source
