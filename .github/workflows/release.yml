@@ -152,6 +152,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # The xlog AAR no longer builds C++: gradle cross-compiles the Rust JNI
+      # crate (`gradle/mars-cargo.gradle.kts`).
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
       - name: Install Android SDK components
         # The runner image already ships the Android SDK command line tools.
         # android-actions/setup-android is avoided because it still tries to
@@ -171,12 +181,13 @@ jobs:
           "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.1.12297006"
           ls "$ANDROID_HOME/ndk"
 
+      # Only the C++ STN libraries come from CMake now; mars-xlog's
+      # libmarsxlog.so is built by cargo while gradle assembles the AAR.
       - name: Build native libraries
         run: |
           export NDK_ROOT=$ANDROID_HOME/ndk/27.1.12297006
           cd mars
           python3 build_android.py "${{ needs.version.outputs.tag }}" $ABIS
-          python3 build_android.py "${{ needs.version.outputs.tag }}" --xlog-only $ABIS
 
       - name: Verify native libraries
         # build_android.py now exits non-zero on failure, but a partial build
@@ -204,6 +215,19 @@ jobs:
           ./gradlew -Prelease --no-daemon \
             :libraries:mars_xlog_sdk:assembleRelease \
             :libraries:mars_android_sdk:assembleRelease
+
+      # jitpack.yml downloads mars-android-native.zip and unpacks it back into
+      # `mars/libraries`, so publish the cargo-built libmarsxlog.so next to the
+      # CMake libraries instead of the C++ one build_android.py used to emit.
+      - name: Stage the Rust xlog libraries
+        run: |
+          set -euo pipefail
+          for ABI in $ABIS; do
+            mkdir -p "mars/libraries/mars_xlog_sdk/libs/$ABI"
+            cp "mars/libraries/mars_xlog_sdk/build/generated/jniLibs/$ABI/libmarsxlog.so" \
+              "mars/libraries/mars_xlog_sdk/libs/$ABI/libmarsxlog.so"
+          done
+          find mars/libraries/mars_xlog_sdk/libs -name '*.so' | sort
 
       - name: Collect artifacts
         run: |

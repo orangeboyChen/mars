@@ -52,7 +52,9 @@ public class Xlog implements Log.LogImp {
 
     public static void open(boolean isLoadLib, int level, int mode, String cacheDir, String logDir, String nameprefix, String pubkey) {
 		if (isLoadLib) {
-			System.loadLibrary("c++_shared");
+			// libmarsxlog.so is built from the Rust workspace (see
+			// gradle/mars-cargo.gradle.kts) and has no C++ runtime dependency,
+			// so there is no libc++_shared.so to load any more.
 			System.loadLibrary("marsxlog");
 		}
 

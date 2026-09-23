@@ -16,6 +16,10 @@ on:
       - 'mars/xlog/**'
       - 'mars/comm/**'
       - 'mars/zstd/**'
+      - 'mars/libraries/**'
+      - 'mars/gradle/**'
+      - 'mars/build.gradle.kts'
+      - 'mars/settings.gradle.kts'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
@@ -24,6 +28,10 @@ on:
       - 'mars/xlog/**'
       - 'mars/comm/**'
       - 'mars/zstd/**'
+      - 'mars/libraries/**'
+      - 'mars/gradle/**'
+      - 'mars/build.gradle.kts'
+      - 'mars/settings.gradle.kts'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -173,6 +181,57 @@ jobs:
           # buildable for every ABI even before gradle switches over.
           cargo build --release -p mars-xlog-jni --target "$target"
           ls -l "target/$target/release/libmarsxlog.so"
+
+  android-aar:
+    name: aar (gradle + cargo)
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 27.1.12297006
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          { yes || true; } | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" --install "platforms;android-36" "build-tools;36.0.0" "ndk;${NDK_VERSION}"
+          test -d "$ANDROID_HOME/ndk/${NDK_VERSION}"
+      # Proves the whole path: the Kotlin DSL build cross-compiles the Rust JNI
+      # crate per ABI and packages every `libmarsxlog.so` into the AAR.
+      - name: Build the xlog AAR
+        working-directory: mars
+        run: ./gradlew --no-daemon :libraries:mars_xlog_sdk:assembleRelease
+      - name: Check the packaged libraries
+        working-directory: mars
+        run: |
+          set -euo pipefail
+          aar=libraries/mars_xlog_sdk/build/outputs/aar/mars_xlog_sdk-release.aar
+          nm="$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "$aar" | grep -q "jni/$abi/libmarsxlog.so" || {
+              echo "::error::$aar is missing jni/$abi/libmarsxlog.so"
+              exit 1
+            }
+            exports=$("$nm" -D --defined-only "libraries/mars_xlog_sdk/build/generated/jniLibs/$abi/libmarsxlog.so" \
+              | grep -c 'Java_com_tencent_mars_xlog_Xlog_' || true)
+            if [ "$exports" -lt 12 ]; then
+              echo "::error::$abi library exports $exports JNI methods, expected 12"
+              exit 1
+            fi
+            echo "$abi: $exports JNI exports"
+          done
 
   apple:
     name: build (${{ matrix.target }})
