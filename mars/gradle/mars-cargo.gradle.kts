@@ -92,14 +92,13 @@ private fun ndkDirectory(): File {
     System.getenv("ANDROID_NDK_HOME")?.let { return file(it) }
     val ndkRoot = androidSdkDirectory().resolve("ndk")
     ndkRoot.resolve(ndkVersion).takeIf { it.isDirectory }?.let { return it }
-    return ndkRoot.listFiles()
-        ?.filter { it.isDirectory }
-        ?.sorted()
-        ?.lastOrNull()
-        ?: throw GradleException(
-            "No NDK installed under $ndkRoot: install \"$ndkVersion\" with the SDK " +
-                "manager, or set ANDROID_NDK_HOME."
-        )
+    val installed = ndkRoot.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sorted()
+    throw GradleException(
+        "NDK $ndkVersion is not installed under $ndkRoot (found: ${installed ?: emptyList<String>()}). " +
+            "Install it with the SDK manager, set ANDROID_NDK_HOME, or override the " +
+            "version with -Pmars.ndk.version=<release>: the linker default that " +
+            "decides the page size of libmarsxlog.so differs between releases."
+    )
 }
 
 private fun ndkBinDirectory(): File {
@@ -120,14 +119,34 @@ private fun cargoKey(triple: String): String = triple.uppercase().replace('-', '
 /** `armv7-linux-androideabi` -> `armv7_linux_androideabi`, used by the `cc` crate. */
 private fun ccKey(triple: String): String = triple.lowercase().replace('-', '_')
 
+/** `e_machine` of the Android ABIs, used to validate a staged library. */
+private val elfMachines: Map<String, Int> = mapOf(
+    // EM_ARM, EM_AARCH64 and EM_X86_64 of <elf.h>.
+    "armeabi-v7a" to 40,
+    "arm64-v8a" to 183,
+    "x86_64" to 62,
+)
+
+/**
+ * `e_machine` of [file], or `null` when it is not an ELF file at all.
+ *
+ * Android is little endian, so the 16-bit field is read that way; every ELF
+ * header puts it at offset 18 (`e_type` is the two bytes before it).
+ */
+private fun elfMachine(file: File): Int? {
+    val header = file.inputStream().use { it.readNBytes(20) }
+    if (header.size < 20) return null
+    if (header[0] != 0x7F.toByte() || header[1] != 'E'.code.toByte()
+        || header[2] != 'L'.code.toByte() || header[3] != 'F'.code.toByte()
+    ) return null
+    return (header[18].toInt() and 0xFF) or ((header[19].toInt() and 0xFF) shl 8)
+}
+
 val cargoBuildTasks: List<TaskProvider<Exec>> = cargoAbis.map { abi ->
     val target = androidAbis.getValue(abi)
     val targetDirectory = rustWorkspace.resolve("target/${target.triple}/release")
     val library = targetDirectory.resolve("libmarsxlog.so")
     val cargo = cargoExecutable()
-    check(cargo.isFile) {
-        "cargo not found at ${cargo}: install Rust (https://rustup.rs) or set -Pmars.cargo=<path>."
-    }
 
     tasks.register<Exec>("cargoBuild${abi.split('-').joinToString("") { it.replaceFirstChar(Char::uppercase) }}") {
         group = "build"
@@ -135,12 +154,33 @@ val cargoBuildTasks: List<TaskProvider<Exec>> = cargoAbis.map { abi ->
 
         workingDir = rustWorkspace
         executable = cargo.absolutePath
+        // Configuration must not depend on the toolchain: `help`, `tasks` and
+        // an IDE sync have to work on a machine without Rust, so the check
+        // runs here instead of while the task is registered.
+        doFirst {
+            check(cargo.isFile) {
+                "cargo not found at $cargo: install Rust (https://rustup.rs) or set -Pmars.cargo=<path>."
+            }
+        }
         args(
-            "build",
+            // `cargo rustc`, not `cargo build`: the flags after `--` reach only
+            // the final crate of this target. `RUSTFLAGS` (and even
+            // CARGO_TARGET_<triple>_RUSTFLAGS, which an exported `RUSTFLAGS`
+            // outranks) would also reach the *host* units — build scripts and
+            // proc-macros — and Apple's ld64 rejects `-Wl,-z` outright, so a
+            // cold cargo build would fail on macOS while CI stayed green.
+            "rustc",
             "--locked",
             "--release",
             "--package", rustCrate,
             "--target", target.triple,
+            "--",
+            // Android 15 devices can use 16 KiB pages and refuse to load an
+            // ELF whose segments are 4 KiB aligned, which is what lld emits by
+            // default on the NDK releases CI installs; mars/CMakeLists.txt
+            // forced the same values for the C++ build.
+            "-C", "link-arg=-Wl,-z,max-page-size=16384",
+            "-C", "link-arg=-Wl,-z,common-page-size=16384",
         )
 
         // cargo reads the per-target linker from CARGO_TARGET_<TRIPLE>_LINKER
@@ -155,22 +195,12 @@ val cargoBuildTasks: List<TaskProvider<Exec>> = cargoAbis.map { abi ->
         environment("CXX_$cc", "$ndkBin/${target.clangPrefix}${nativeMinApi}-clang++")
         environment("AR_$cc", "$ndkBin/llvm-ar")
         environment("PATH", "$ndkBin${File.pathSeparator}${System.getenv("PATH")}")
-        // `RUSTFLAGS` outranks `target.<triple>.rustflags` of
-        // rust/.cargo/config.toml, so the page size has to be appended to
-        // whatever the caller already has (CI exports `-D warnings`).
-        val rustflags = listOfNotNull(
-            System.getenv("RUSTFLAGS"),
-            "-C link-arg=-Wl,-z,max-page-size=16384",
-            "-C link-arg=-Wl,-z,common-page-size=16384",
-        ).joinToString(" ")
-        environment("RUSTFLAGS", rustflags)
 
         inputs.dir(rustWorkspace.resolve("crates"))
         inputs.file(rustWorkspace.resolve("Cargo.toml"))
         inputs.file(rustWorkspace.resolve("Cargo.lock"))
         inputs.property("minApi", nativeMinApi)
         inputs.property("ndk", ndkBin.absolutePath)
-        inputs.property("rustflags", rustflags)
         outputs.file(library)
     }
 }
@@ -198,14 +228,37 @@ val generateJniLibs = tasks.register<Sync>("generateJniLibs") {
     into(generatedJniLibs)
 
     doLast {
-        val missing = androidAbis.keys.filter {
-            !generatedJniLibs.get().asFile.resolve("$it/libmarsxlog.so").isFile
-        }
+        val root = generatedJniLibs.get().asFile
+        val missing = androidAbis.keys.filter { !root.resolve("$it/libmarsxlog.so").isFile }
         if (missing.isNotEmpty()) {
             throw GradleException(
                 "libmarsxlog.so is missing for ${missing.joinToString()}. " +
-                    "Build it with cargo or place the prebuilt libraries in ${file("libs")}/<abi>/."
+                    if (System.getenv("JITPACK") == "true") {
+                        "JitPack has no Rust toolchain: jitpack.yml downloads " +
+                            "mars-android-native.zip from the GitHub release before the " +
+                            "build, check its 'before_install' step."
+                    } else {
+                        "Build it with cargo, or place the prebuilt libraries in " +
+                            "${file("libs")}/<abi>/."
+                    }
             )
+        }
+
+        // A prebuilt library is copied verbatim, so make sure it really is an
+        // Android shared object of this ABI — a stale or misplaced file would
+        // otherwise be shipped without a single warning.
+        androidAbis.forEach { (abi, _) ->
+            val library = root.resolve("$abi/libmarsxlog.so")
+            val machine = elfMachine(library)
+            if (machine != null && machine != elfMachines.getValue(abi)) {
+                throw GradleException(
+                    "$library is an ELF for machine $machine, expected " +
+                        "${elfMachines.getValue(abi)} ($abi)."
+                )
+            }
+            if (machine == null) {
+                logger.lifecycle("$library is not an ELF file, skipped the header check")
+            }
         }
     }
 }

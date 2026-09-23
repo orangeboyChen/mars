@@ -1,9 +1,10 @@
 pluginManagement {
     repositories {
-        mavenLocal()
         google()
         mavenCentral()
         gradlePluginPortal()
+        // Last: a stale artifact in ~/.m2 must not shadow the real one.
+        mavenLocal()
     }
 }
 

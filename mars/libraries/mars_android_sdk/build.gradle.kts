@@ -58,9 +58,38 @@ android {
     }
 }
 
-val sourcesJar = tasks.register<Jar>("sourcesJar") {
-    archiveClassifier.set("sources")
-    from(android.sourceSets.named("main").get().java.srcDirs)
+// The C++ libraries of this module come from build_android.py (or from the
+// mars-android-native.zip that jitpack.yml downloads), so a build without them
+// used to assemble an AAR whose jni/ directory was simply empty.
+val verifyPrebuiltLibraries = tasks.register("verifyPrebuiltLibraries") {
+    doLast {
+        val missing = android.defaultConfig.ndk.abiFilters.filter { abi ->
+            project.file("libs/$abi").listFiles { f -> f.name.endsWith(".so") }.isNullOrEmpty()
+        }
+        if (missing.isNotEmpty()) {
+            throw GradleException(
+                "No prebuilt .so for ${missing.sorted()} in ${project.file("libs")}. Run " +
+                    "mars/build_android.py, or unzip mars-android-native.zip from the " +
+                    "GitHub release the way jitpack.yml does."
+            )
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn(verifyPrebuiltLibraries)
+}
+
+
+afterEvaluate {
+    // The packaged ABIs must match what gradle/mars-cargo.gradle.kts builds
+    // (mars-core: what build_android.py produces): shipping an AAR that misses
+    // one of them is worse than failing here.
+    val packaged = android.defaultConfig.ndk.abiFilters.sorted()
+    val built = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    check(packaged == built) {
+        "${project.path} packages $packaged but the native build produces $built."
+    }
 }
 
 publishing {

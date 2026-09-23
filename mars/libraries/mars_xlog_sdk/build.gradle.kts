@@ -19,6 +19,10 @@ android {
     namespace = "com.tencent.mars.xlog"
     compileSdk = 36
 
+    // The NDK cargo links with, see gradle/mars-cargo.gradle.kts: the linker
+    // default that decides the page size of libmarsxlog.so differs between
+    // releases, so AGP has to strip with the same one.
+    ndkVersion = "27.1.12297006"
     defaultConfig {
         // 21, not the 19 of the C++ build: the Rust standard library for the
         // Android targets requires API 21.
@@ -31,7 +35,7 @@ android {
     sourceSets {
         named("main") {
             @Suppress("DEPRECATION")
-            jniLibs.srcDirs(project.extra.get("mars.jniLibsDir") as File)
+            jniLibs.srcDirs((project.extra.get("mars.jniLibsDir") as File))
         }
     }
 
@@ -53,9 +57,16 @@ android {
     }
 }
 
-val sourcesJar = tasks.register<Jar>("sourcesJar") {
-    archiveClassifier.set("sources")
-    from(android.sourceSets.named("main").get().java.srcDirs)
+
+afterEvaluate {
+    // The packaged ABIs must match what gradle/mars-cargo.gradle.kts builds
+    // (mars-core: what build_android.py produces): shipping an AAR that misses
+    // one of them is worse than failing here.
+    val packaged = android.defaultConfig.ndk.abiFilters.sorted()
+    val built = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    check(packaged == built) {
+        "${project.path} packages $packaged but the native build produces $built."
+    }
 }
 
 publishing {
