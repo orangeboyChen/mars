@@ -38,17 +38,15 @@ let package = Package(
             url: "https://github.com/orangeboyChen/mars/releases/download/v0.1.2/MarsXlog.xcframework.zip",
             checksum: "0000000000000000000000000000000000000000000000000000000000000000"
         ),
-        // Thin Swift wrapper: a binary target can not declare dependencies on
-        // system libraries, and the static library needs libc++ and libz, so
-        // they are declared here and propagated to every consumer.
+        // Swift API over the C ABI of the Rust crate mars-xlog-ffi. A binary
+        // target can not declare dependencies on system libraries, so they
+        // would be declared here — the Rust static library needs none: not
+        // libc++, because there is no C++ left, and not libz, because the
+        // zlib implementation is Rust too.
         .target(
             name: "MarsXlog",
             dependencies: ["MarsXlogBinary"],
-            path: "Sources/MarsXlog",
-            linkerSettings: [
-                .linkedLibrary("c++"),
-                .linkedLibrary("z"),
-            ]
+            path: "Sources/MarsXlog"
         )
     ]
 )

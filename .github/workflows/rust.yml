@@ -106,6 +106,41 @@ jobs:
           workspaces: rust
       - run: cargo build --workspace --release --all-targets
 
+  xcframework:
+    name: xcframework (cargo)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # The Apple distribution is the Rust static library too: no CMake, no C++.
+      - name: Build MarsXlog.xcframework
+        run: cd mars && python3 build_xcframework.py --zip
+      - name: Check the slices
+        run: |
+          set -euo pipefail
+          cd mars/cmake_build/XCFramework/MarsXlog.xcframework
+          for slice in ios-arm64 ios-arm64_x86_64-simulator; do
+            test -f "$slice/Headers/mars_xlog.h" || {
+              echo "::error::$slice ships no mars_xlog.h"
+              exit 1
+            }
+            lib=$(ls "$slice"/*.a)
+            nm -gU "$lib" | grep -q '_mars_xlog_open' || {
+              echo "::error::$slice/$lib exports no mars_xlog_open"
+              exit 1
+            }
+            echo "$slice: $(basename "$lib") exports mars_xlog_open"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MarsXlog.xcframework
+          path: mars/cmake_build/XCFramework/MarsXlog.xcframework.zip
+
   android:
     name: build (${{ matrix.target }})
     runs-on: ubuntu-latest
