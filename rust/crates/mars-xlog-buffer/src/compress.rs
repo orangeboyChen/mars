@@ -40,13 +40,11 @@ impl Compressor {
                 // builds it on zlib-rs rather than miniz_oxide: miniz_oxide
                 // emits different bytes for the same input, and the port has
                 // to stay byte-compatible with the C++ on disk.
-                Some(Self::Zlib(
-                    flate2::Compress::new_with_window_bits(
-                        flate2::Compression::best(),
-                        false,
-                        ZLIB_WINDOW_BITS,
-                    ),
-                ))
+                Some(Self::Zlib(flate2::Compress::new_with_window_bits(
+                    flate2::Compression::best(),
+                    false,
+                    ZLIB_WINDOW_BITS,
+                )))
             }
             CompressMode::Zstd => {
                 let mut encoder = zstd::stream::raw::Encoder::new(level).ok()?;
