@@ -1,7 +1,7 @@
 # https://docs.jitpack.io — Android libraries on JitPack
 #
-#   implementation 'com.github.orangeboyChen.mars:mars-xlog:v0.0.2'
-#   implementation 'com.github.orangeboyChen.mars:mars-core:v0.0.2'
+#   implementation 'com.github.orangeboyChen.mars:mars-xlog:2.0.1'
+#   implementation 'com.github.orangeboyChen.mars:mars-core:2.0.1'
 #
 # JitPack has an Android SDK but no NDK, so the native libraries built by
 # .github/workflows/release.yml are downloaded from the release of the same

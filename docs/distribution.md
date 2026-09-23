@@ -101,14 +101,21 @@ allprojects {
 }
 
 dependencies {
-    implementation 'com.github.orangeboyChen.mars:mars-xlog:v0.0.2'
+    implementation 'com.github.orangeboyChen.mars:mars-xlog:2.0.1'
     // or, for the full mars (stn + sdt + xlog):
-    implementation 'com.github.orangeboyChen.mars:mars-core:v0.0.2'
+    implementation 'com.github.orangeboyChen.mars:mars-core:2.0.1'
 }
 ```
 
 The published artifact ids are `mars-xlog` and `mars-core` (they come from
 `artifactId` in the module build files, not from the Gradle project names).
+
+The version carries **no `v` prefix**, even though the git tag does. JitPack
+names the artifact after the version it was asked for, so asking for `v2.0.1`
+publishes `...:mars-xlog:v2.0.1`; Gradle then reads `v2.0.1` and `2.0.1` as two
+different modules, and a consumer that ends up with both gets the library twice
+on its classpath. `release.yml` therefore triggers and checks the unprefixed
+spelling, and that is the one to depend on.
 
 ### Without JitPack
 
