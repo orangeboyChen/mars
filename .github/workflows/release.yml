@@ -309,9 +309,9 @@ jobs:
           for i in $(seq 1 40); do
             STATE=$(status)
             echo "JitPack $TAG: ${STATE:-unknown}"
-            case "$STATE" in
-              Ok) echo "JitPack build succeeded"; exit 0 ;;
-              Error)
+            case "$(echo "$STATE" | tr '[:upper:]' '[:lower:]')" in
+              ok) echo "JitPack build succeeded"; exit 0 ;;
+              error)
                 echo "::error::JitPack build failed, see $LOG"
                 curl -sSfL "$LOG" | tail -40 || true
                 exit 1 ;;

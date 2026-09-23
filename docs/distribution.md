@@ -84,14 +84,14 @@ allprojects {
 }
 
 dependencies {
-    implementation 'com.github.orangeboyChen.mars:mars_xlog_sdk:v0.1.0'
+    implementation 'com.github.orangeboyChen.mars:mars-xlog:v0.0.2'
     // or, for the full mars (stn + sdt + xlog):
-    implementation 'com.github.orangeboyChen.mars:mars_android_sdk:v0.1.0'
+    implementation 'com.github.orangeboyChen.mars:mars-core:v0.0.2'
 }
 ```
 
-The exact module names are listed on <https://jitpack.io> when you look up
-`orangeboyChen/mars`.
+The published artifact ids are `mars-xlog` and `mars-core` (they come from
+`artifactId` in the module build files, not from the Gradle project names).
 
 ### Without JitPack
 
