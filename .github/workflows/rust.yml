@@ -134,11 +134,15 @@ jobs:
               echo "::error::$slice ships no mars_xlog.h"
               exit 1
             }
-            lib=$(ls "$slice"/*.a)
-            nm -gU "$lib" | grep -q '_mars_xlog_open' || {
-              echo "::error::$slice/$lib exports no mars_xlog_open"
+            lib=$(ls "$slice"/*.a | head -1)
+            # Apple's nm warns about the LLVM attributes of some Rust object
+            # files, and `grep -q` would close the pipe mid-run, so count
+            # instead of bailing out early.
+            exports=$(nm -gU "$lib" 2>/dev/null | grep -c 'mars_xlog_open' || true)
+            if [ "$exports" -eq 0 ]; then
+              echo "::error::$slice/$(basename "$lib") exports no mars_xlog_open"
               exit 1
-            }
+            fi
             echo "$slice: $(basename "$lib") exports mars_xlog_open"
           done
       - uses: actions/upload-artifact@v4
