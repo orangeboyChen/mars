@@ -155,6 +155,15 @@ val cargoBuildTasks: List<TaskProvider<Exec>> = cargoAbis.map { abi ->
         environment("CXX_$cc", "$ndkBin/${target.clangPrefix}${nativeMinApi}-clang++")
         environment("AR_$cc", "$ndkBin/llvm-ar")
         environment("PATH", "$ndkBin${File.pathSeparator}${System.getenv("PATH")}")
+        // `RUSTFLAGS` outranks `target.<triple>.rustflags` of
+        // rust/.cargo/config.toml, so the page size has to be appended to
+        // whatever the caller already has (CI exports `-D warnings`).
+        val rustflags = listOfNotNull(
+            System.getenv("RUSTFLAGS"),
+            "-C link-arg=-Wl,-z,max-page-size=16384",
+            "-C link-arg=-Wl,-z,common-page-size=16384",
+        ).joinToString(" ")
+        environment("RUSTFLAGS", rustflags)
 
         inputs.dir(rustWorkspace.resolve("crates"))
         inputs.file(rustWorkspace.resolve("Cargo.toml"))
@@ -163,6 +172,7 @@ val cargoBuildTasks: List<TaskProvider<Exec>> = cargoAbis.map { abi ->
         inputs.file(rustWorkspace.resolve(".cargo/config.toml"))
         inputs.property("minApi", nativeMinApi)
         inputs.property("ndk", ndkBin.absolutePath)
+        inputs.property("rustflags", rustflags)
         outputs.file(library)
     }
 }
