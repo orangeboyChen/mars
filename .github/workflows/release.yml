@@ -37,6 +37,7 @@ permissions:
   pull-requests: write
 
 env:
+  NDK_VERSION: 27.1.12297006
   XCFRAMEWORK_ZIP: MarsXlog.xcframework.zip
   NATIVE_ZIP: mars-android-native.zip
   XLOG_AAR: mars-xlog.aar
@@ -249,12 +250,12 @@ jobs:
           fi
           echo "sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null
-          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.1.12297006"
+          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "ndk;${NDK_VERSION}"
           ls "$ANDROID_HOME/ndk"
 
       - name: Build native libraries
         run: |
-          export NDK_ROOT=$ANDROID_HOME/ndk/27.1.12297006
+          export NDK_ROOT=$ANDROID_HOME/ndk/${NDK_VERSION}
           cd mars
           python3 build_android.py "${{ needs.version.outputs.tag }}" $ABIS
           python3 build_android.py "${{ needs.version.outputs.tag }}" --xlog-only $ABIS
@@ -278,6 +279,27 @@ jobs:
           if [ "$MISSING" -ne 0 ]; then
             exit 1
           fi
+
+      - name: Verify no text relocations
+        # A library carrying DT_TEXTREL links, ships and loads everywhere except
+        # Android 15+, which refuses to dlopen it — so the one place the defect
+        # shows up is the device that loads it, long after this workflow has gone
+        # green. lld only sets the flag when the link allows text relocations
+        # (-z notext), so rejecting it here keeps that from being reintroduced.
+        run: |
+          set -euo pipefail
+          READELF="$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          FAILED=0
+          for SO in $(find mars/libraries -path '*/libs/*' -name '*.so' ! -name 'libc++_shared.so'); do
+            if "$READELF" -d "$SO" | grep -qw TEXTREL; then
+              echo "::error::$SO carries DT_TEXTREL; Android 15+ will not load it"
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+          echo "no DT_TEXTREL in any .so"
 
       - name: Build AARs
         run: |
