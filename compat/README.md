@@ -30,14 +30,26 @@ C++ 侧只编译 xlog 的 crypt + buffer 这几个 .cc（没有 JNI / ObjC / app
 3. 断言：
    - **Rust 解码器必须从两个文件里都还原出原始输入**（`rust→cpp文件`、`rust→rust文件`）；
    - 在 C++ 解码器无损的路径上（zlib async、所有 sync），它从 Rust 写的文件里也必须还原出原始输入；
-   - 确定性用例（`nocrypt` 且 `sync` 或 `compress=0`）额外要求两边**编码字节完全一致**。
+   - 两边的**记录结构**（magic / seq / tailer，以及除 async zstd 外的块长度）必须一致；
+   - 确定性用例额外要求**编码字节完全一致**：zlib 路径始终严格比对（现在两边都是 zlib 语义、字节相同），zstd 路径在 C++ 侧也用同版本 zstd 时用 `--strict-bytes` 严格比对。
 
 输入记录覆盖了 ASCII、UTF-8、0x01–0xFF 全字节、超过一个 TEA 分组的长记录、以及紧贴 8 字节 TEA 分组边界的 1/7/8 字节记录。
 
-## 已知差异（测试通过，但值得知道）
+## 已知差异
 
-1. **zlib 压缩字节不完全相同**：flate2 用的是 `miniz_oxide`（`rust_backend`），C++ 用的是系统 zlib。同一份输入两边差 3 字节（566 vs 569）。格式层面完全互通——互相都能解出原文——但字节流不逐字节相同。要逐字节一致得把 flate2 换成 zlib / zlib-rs 后端。
-2. **zstd 基本一致**：单块用例两边字节完全相同；每记录分块时 4096 字节那条记录一边压成 18 字节、一边 17 字节（vendored zstd 与 crates.io zstd 1.5.7 的差异），同样不影响互解。
-3. **C++ 解码器在 async zstd 上会丢尾巴**：`decode_log_file.c` 的 `zstdDecompress` 一旦把输入读完就跳出循环，不去 drain `ZSTD_decompressStream`，于是每个块的最后几个字节被丢掉（单块丢 9 字节，每记录分块时只剩 432/4510 字节）。这是 C++ 侧解码器的问题，Rust 解码器能完整还原，所以这条路径只校验 Rust 侧的还原结果。
-4. **C++ 在非加密模式下会把 64 字节未初始化内存写进 header**：`LogCrypt` 没配置 server 公钥时直接 return，`client_pubkey_` 从没被初始化，而 `SetHeaderInfo` 照样把它拷进每个 header——也就是说日志头里写的是当时堆上的内容（macOS 上是全 0，Linux 上不是）。Rust 端口写 0。解码器在非加密 magic 下不读这个字段，所以功能无影响，但字节流不同，而且严格说这是把 64 字节堆内存泄进日志文件。比对时该字段会被屏蔽。
-5. **`is_compress=false` 的 async 路径不是可用组合**：magic 字节写着 zlib/zstd，所有解码器（包括仓库自己的）都会去解压一段没压缩过的数据。这条路径只比对两个编码器的字节；另外 C++ 把 `is_compress_` 当作 `__GetSeq()` 的 sync/async 参数传进去，未压缩的 async buffer 拿到 seq=0，Rust 端口故意传 `true`（见 `LogBuffer::reset` 的注释），所以比对时 seq 字段会被屏蔽。
+1. **zstd：仓库 vendored 的是 1.4.4，Rust 侧是 1.5.7**。同一条记录压缩后长度可能差 1 字节（实测 4096 字节那条：C++ 18 字节、Rust 17 字节），其余结构（magic / seq / tailer / 块数）完全一致，互解也完全正常。把 C++ 侧换成同版本 zstd 后**字节完全一致**——已验证：
+
+   ```bash
+   SYSTEM_ZSTD=1 ./compat/cpp/build.sh          # 链接系统 libzstd（1.5.x），跳过 mars/zstd
+   python3 compat/run.py --strict-bytes         # 32/32，zlib 与 zstd 全部 identical
+   ```
+
+   也就是说差异只来自 C++ 侧依赖的 zstd 版本，不是端口逻辑。要彻底消除就把 `mars/zstd` 升到 1.5.7。`build.sh` 支持 `ZSTD_LIB_DIR` / `ZSTD_INCLUDE_DIR` 指定非默认路径。
+
+2. **C++ 解码器在 async zstd 上会丢尾巴**：`decode_log_file.c` 的 `zstdDecompress` 一旦把输入读完就跳出循环，不去 drain `ZSTD_decompressStream`，于是每个块的最后几个字节被丢掉（单块丢 9 字节，每记录分块时只剩 431/4510 字节）。这是 C++ 侧解码器的问题，Rust 解码器能完整还原，所以这条路径只校验 Rust 侧的还原结果。
+
+3. **C++ 在非加密模式下会把 64 字节未初始化内存写进 header**：`LogCrypt` 没配置 server 公钥时直接 return，`client_pubkey_` 从没被初始化，而 `SetHeaderInfo` 照样把它拷进每个 header——日志头里写的是当时堆上的内容（macOS 上是全 0，Linux 上不是）。Rust 端口写 0。解码器在非加密 magic 下不读这个字段，功能无影响，但严格说这是把 64 字节堆内存泄进日志文件。比对时该字段会被屏蔽。
+
+4. **`is_compress=false` 的 async 路径不是可用组合**：magic 字节写着 zlib/zstd，所有解码器（包括仓库自己的）都会去解压一段没压缩过的数据。这条路径只比对两个编码器的字节；另外 C++ 把 `is_compress_` 当作 `__GetSeq()` 的 sync/async 参数传进去，未压缩的 async buffer 拿到 seq=0，Rust 端口故意传 `true`（见 `LogBuffer::reset` 的注释），所以比对时 seq 字段会被屏蔽。
+
+> 之前 flate2 用 `miniz_oxide` 后端时，zlib 压缩字节和 C++ 的系统 zlib 差 3 字节（566 vs 569）。改成 `zlib-rs` 后端并显式用 `new_with_window_bits(-15)`（对应 `deflateInit2(..., -MAX_WBITS, ...)`）后，两边字节完全一致（566 vs 566）。

@@ -10,6 +10,8 @@ use crate::CompressMode;
 
 /// `ZSTD_CCtx_setParameter(cctx_, ZSTD_c_windowLog, 16)`.
 const ZSTD_WINDOW_LOG: u32 = 16;
+/// `deflateInit2(..., -MAX_WBITS, ...)`: raw DEFLATE, 15-bit window.
+const ZLIB_WINDOW_BITS: u8 = 15;
 
 /// Upper bound on the zstd flush loop; a flush that cannot make progress stops
 /// the loop anyway.
@@ -31,17 +33,20 @@ impl Compressor {
     pub fn new(mode: CompressMode, level: i32) -> Option<Self> {
         match mode {
             CompressMode::Zlib => {
-                // NOTE(port): flate2 gates `Compress::new_with_window_bits`
-                // behind its `any_zlib` feature (libz / zlib-rs); this
-                // workspace builds flate2 with `default-features = false,
-                // features = ["rust_backend"]` (miniz_oxide), which does not
-                // expose it. `Compress::new(level, false)` is the same stream
-                // on that backend: no zlib header and a 15-bit window, i.e.
-                // `deflateInit2(..., -MAX_WBITS, ...)`.
-                Some(Self::Zlib(flate2::Compress::new(
-                    flate2::Compression::best(),
-                    false,
-                )))
+                // `deflateInit2(..., Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS,
+                // MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY)`: raw DEFLATE, no zlib
+                // header, 15-bit window. flate2 only exposes the window bits
+                // with an `any_zlib` backend, which is why the workspace
+                // builds it on zlib-rs rather than miniz_oxide: miniz_oxide
+                // emits different bytes for the same input, and the port has
+                // to stay byte-compatible with the C++ on disk.
+                Some(Self::Zlib(
+                    flate2::Compress::new_with_window_bits(
+                        flate2::Compression::best(),
+                        false,
+                        ZLIB_WINDOW_BITS,
+                    ),
+                ))
             }
             CompressMode::Zstd => {
                 let mut encoder = zstd::stream::raw::Encoder::new(level).ok()?;

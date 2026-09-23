@@ -134,6 +134,31 @@ def normalize(data: bytes, mask_seq: bool, mask_pubkey: bool) -> bytes:
     return bytes(out)
 
 
+def structure(data: bytes, mask_seq: bool) -> list[tuple]:
+    """Per-record skeleton: (magic, seq, length, tailer byte).
+
+    Two encoders that disagree here are writing different files even when
+    every decoder happens to cope with both.
+    """
+    out = []
+    header = 73
+    tailer = 1
+    offset = 0
+    while offset + header + tailer <= len(data):
+        length = int.from_bytes(data[offset + 5:offset + 9], "little")
+        seq = 0 if mask_seq else int.from_bytes(data[offset + 1:offset + 3], "little")
+        out.append((data[offset], seq, length, data[offset + header + length]))
+        offset += header + length + tailer
+    return out
+
+
+def skeleton(record: tuple) -> tuple:
+    """`structure()` minus the length, which is what a zstd version bump can
+    change while everything else stays identical."""
+    magic, seq, _length, tailer = record
+    return (magic, seq, tailer)
+
+
 def describe_diff(a: bytes, b: bytes) -> str:
     """Explains *where* two encodings differ, so a CI failure is actionable."""
     fields = []
@@ -165,17 +190,27 @@ def describe_diff(a: bytes, b: bytes) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", default=None)
+    parser.add_argument("--cpp-bin", default=str(COMPAT / "cpp" / "compat_tool"))
+    parser.add_argument("--rust-bin", default=str(ROOT / "rust" / "target" / "debug" / "xlog-compat"))
     parser.add_argument("--keep", action="store_true", help="keep the work dir")
     parser.add_argument("--filter", default="", help="only run cases whose name contains this")
+    parser.add_argument(
+        "--strict-bytes",
+        action="store_true",
+        help="require byte-identical output everywhere it is deterministic, "
+        "including zstd (only meaningful when the C++ harness was built with "
+        "SYSTEM_ZSTD=1 against the same zstd version as the Rust side)",
+    )
     args = parser.parse_args()
+    strict_bytes = args.strict_bytes
 
     work = Path(args.work_dir) if args.work_dir else ROOT / "compat" / "build" / "diff"
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
 
-    rust_bin = ROOT / "rust" / "target" / "debug" / "xlog-compat"
-    cpp_bin = COMPAT / "cpp" / "compat_tool"
+    rust_bin = Path(args.rust_bin)
+    cpp_bin = Path(args.cpp_bin)
     build_tools(rust_bin, cpp_bin)
 
     records = work / "records.bin"
@@ -248,11 +283,33 @@ def main() -> int:
         # Byte-for-byte comparison of the two encoders. Deterministic only when
         # neither an ephemeral ECDH key nor a compressor (which need not agree
         # byte for byte across implementations) can change the bytes.
-        deterministic = crypt == 0 and (sync == 1 or compress == 0)
-        normalized_equal = normalize(
-            cpp_bytes, mask_seq=not sync and compress == 0, mask_pubkey=crypt == 0
-        ) == normalize(
-            rust_bytes, mask_seq=not sync and compress == 0, mask_pubkey=crypt == 0
+        masked_seq = not sync and compress == 0
+        # Two encoders must agree on the record skeleton in every case. Record
+        # *lengths* are only strict where the compressor is pinned down: the
+        # repo vendors zstd 1.4.4 while the Rust side builds 1.5.7, and a
+        # record can come out one byte longer or shorter across those.
+        strict_lengths = strict_bytes or sync == 1 or compress == 0
+        cpp_structure = structure(cpp_bytes, masked_seq)
+        rust_structure = structure(rust_bytes, masked_seq)
+        if strict_lengths:
+            same_structure = cpp_structure == rust_structure
+        else:
+            same_structure = [skeleton(r) for r in cpp_structure] == [
+                skeleton(r) for r in rust_structure
+            ]
+        if not same_structure:
+            failures.append(
+                f"{name}: different record structure ({describe_diff(cpp_bytes, rust_bytes)})"
+            )
+
+        # Byte-for-byte payload comparison. Deterministic only when neither an
+        # ephemeral ECDH key (crypt) nor a compressor that does not agree byte
+        # for byte can change the bytes: zlib matches (flate2 runs on zlib-rs,
+        # same as the C++'s zlib), zstd does not (the repo vendors zstd 1.4.4,
+        # the Rust side builds 1.5.7).
+        deterministic = crypt == 0 and (mode == "zlib" or strict_bytes)
+        normalized_equal = normalize(cpp_bytes, masked_seq, crypt == 0) == normalize(
+            rust_bytes, masked_seq, crypt == 0
         )
         if deterministic and not normalized_equal:
             failures.append(

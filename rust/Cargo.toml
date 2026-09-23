@@ -23,7 +23,7 @@ mars-xlog-buffer = { path = "crates/mars-xlog-buffer" }
 mars-xlog-appender = { path = "crates/mars-xlog-appender" }
 
 memmap2 = "0.9"
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 zstd = "0.13"
 k256 = "0.13"
 libc = "0.2"

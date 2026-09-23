@@ -202,6 +202,23 @@ jobs:
       - name: Diff the two implementations
         working-directory: ${{ github.workspace }}
         run: python3 compat/run.py
+      # The repo vendors zstd 1.4.4 while the Rust side builds 1.5.7, and
+      # different zstd versions do not emit identical bytes. When the runner's
+      # libzstd happens to be the same version as the Rust one, run the matrix
+      # again against it and require byte-identical output everywhere.
+      - name: Diff against the system zstd (byte exact)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          rust_zstd="$(sed -n 's/^version = ".*+zstd\.\(.*\)".*/\1/p'             <(grep -A1 'name = "zstd-sys"' rust/Cargo.lock))"
+          sys_zstd="$(pkg-config --modversion libzstd)"
+          echo "zstd: rust ${rust_zstd:-?} vs system ${sys_zstd}"
+          if [ "${rust_zstd}" != "${sys_zstd}" ]; then
+            echo "versions differ, skipping the byte-exact pass"
+            exit 0
+          fi
+          SYSTEM_ZSTD=1 ./compat/cpp/build.sh compat/cpp/compat_tool_system
+          python3 compat/run.py --strict-bytes --cpp-bin compat/cpp/compat_tool_system
 
   docs:
     name: docs

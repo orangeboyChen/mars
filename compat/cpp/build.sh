@@ -39,6 +39,11 @@ c_sources=(
 )
 
 # Vendored zstd: common + compress + decompress are enough for streaming.
+#
+# SYSTEM_ZSTD=1 links the system libzstd instead. The repo vendors zstd 1.4.4
+# while the Rust side builds 1.5.7, and different zstd versions do not emit
+# identical bytes, so this is how you check that the port itself is
+# byte-exact: build both halves against the same library and re-run the matrix.
 shopt -s nullglob
 zstd_sources=(
   "$root"/mars/zstd/lib/common/*.c
@@ -46,6 +51,19 @@ zstd_sources=(
   "$root"/mars/zstd/lib/decompress/*.c
 )
 shopt -u nullglob
+zstd_libs=()
+if [ "${SYSTEM_ZSTD:-0}" = "1" ]; then
+  echo "  (linking the system libzstd instead of mars/zstd)"
+  zstd_sources=()
+  zstd_libs=(-lzstd)
+  if [ -n "${ZSTD_LIB_DIR:-}" ]; then
+    zstd_libs=(-L"$ZSTD_LIB_DIR" -lzstd)
+  fi
+  if [ -n "${ZSTD_INCLUDE_DIR:-}" ]; then
+    includes+=(-I"$ZSTD_INCLUDE_DIR")
+  fi
+  includes+=(-I"$here/zstd_system_shim")
+fi
 
 includes=(
   -I"$root"
@@ -57,6 +75,9 @@ includes=(
   -I"$root/mars/zstd/lib"
   -I"$root/mars/zstd/lib/common"
 )
+if [ "${SYSTEM_ZSTD:-0}" = "1" ]; then
+  includes+=(-I"$here/zstd_system_shim")
+fi
 
 objects=()
 compile() {
@@ -73,7 +94,12 @@ for src in "${cpp_sources[@]}"; do
   compile "$CXX" "$CXXFLAGS" "$src"
 done
 
-for src in "${c_sources[@]}" "${zstd_sources[@]}"; do
+all_c_sources=("${c_sources[@]}")
+if [ "${#zstd_sources[@]}" -gt 0 ]; then
+  all_c_sources+=("${zstd_sources[@]}")
+fi
+
+for src in "${all_c_sources[@]}"; do
   # decode_log_file.c brings its own `main`; rename it so it can be linked.
   if [ "$(basename "$src")" = "decode_log_file.c" ]; then
     if [ "$src" -nt "$build_dir/decode_log_file.o" ]; then
@@ -89,5 +115,9 @@ for src in "${c_sources[@]}" "${zstd_sources[@]}"; do
 done
 
 echo "  LINK $out"
-"$CXX" $CXXFLAGS "${objects[@]}" -o "$out" -lz -lpthread
+if [ "${#zstd_libs[@]}" -gt 0 ]; then
+  "$CXX" $CXXFLAGS "${objects[@]}" -o "$out" -lz "${zstd_libs[@]}" -lpthread
+else
+  "$CXX" $CXXFLAGS "${objects[@]}" -o "$out" -lz -lpthread
+fi
 echo "built $out"
