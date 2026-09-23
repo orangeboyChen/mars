@@ -169,6 +169,10 @@ jobs:
           # So that plain `llvm-ar` and friends are reachable too.
           export PATH="$ndk_bin:$PATH"
           cargo build --release -p mars-xlog-ffi --target "$target"
+          # The JNI crate is what the Android glue will link against; keep it
+          # buildable for every ABI even before gradle switches over.
+          cargo build --release -p mars-xlog-jni --target "$target"
+          ls -l "target/$target/release/libmarsxlog.so"
 
   apple:
     name: build (${{ matrix.target }})
