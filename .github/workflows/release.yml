@@ -1,0 +1,339 @@
+name: Release
+
+# One release for both platforms:
+#   * MarsXlog.xcframework.zip -> binary target of Package.swift (SPM)
+#   * mars-xlog.aar / mars-core.aar / mars-android-native.zip -> JitPack + Maven
+#
+# Trigger it manually (Actions -> Release -> Run workflow) with a major/minor/
+# patch bump, or by typing a version directly - "1.2.3" and "v1.2.3" are both
+# accepted. The git tag and the GitHub release always use the "v" prefix.
+#
+# workflow_dispatch only: the workflow must live on the default branch, and the
+# tag is created by this workflow itself, so pushing it never re-triggers a run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Semver bump applied to the latest vX.Y.Z tag'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: 'Explicit version, e.g. 1.2.3 or v1.2.3 (overrides the bump)'
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  XCFRAMEWORK_ZIP: MarsXlog.xcframework.zip
+  NATIVE_ZIP: mars-android-native.zip
+  XLOG_AAR: mars-xlog.aar
+  CORE_AAR: mars-core.aar
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      is_new: ${{ steps.resolve.outputs.is_new }}
+      skip: ${{ steps.resolve.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            VERSION="${INPUT_VERSION#v}"
+          else
+            LAST=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
+            [ -n "$LAST" ] || LAST=v0.0.0
+            VERSION="${LAST#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            case "${INPUT_BUMP:-patch}" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            VERSION="$MAJOR.$MINOR.$PATCH"
+          fi
+
+          TAG="v$VERSION"
+          if git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
+            IS_NEW=false
+          else
+            IS_NEW=true
+          fi
+
+          # never republish a release that is already out: the checksum in
+          # Package.swift is bound to the published zip
+          SKIP=false
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
+            # complete means *all four* artifacts: a partial release must stay
+            # repairable, otherwise a rerun skips the build jobs forever
+            COMPLETE=true
+            for ASSET in "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP" "$XLOG_AAR" "$CORE_AAR"; do
+              grep -qx "$ASSET" <<< "$ASSETS" || COMPLETE=false
+            done
+            if [ "$COMPLETE" = true ]; then
+              SKIP=true
+            fi
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "is_new=$IS_NEW" >> "$GITHUB_OUTPUT"
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Release $TAG"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| version | \`$VERSION\` |"
+            echo "| tag | \`$TAG\` |"
+            echo "| new tag | \`$IS_NEW\` |"
+            echo "| already published | \`$SKIP\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apple:
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show build environment
+        run: |
+          xcodebuild -version
+          cmake --version | head -1
+          swift --version 2>/dev/null | head -2
+
+      - name: Build MarsXlog.xcframework
+        run: |
+          cd mars
+          python3 build_xcframework.py "${{ needs.version.outputs.tag }}" --zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MarsXlog.xcframework
+          path: mars/cmake_build/XCFramework/${{ env.XCFRAMEWORK_ZIP }}
+
+  android:
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    env:
+      ABIS: armeabi-v7a arm64-v8a x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        # The runner image already ships the Android SDK command line tools.
+        # android-actions/setup-android is avoided because it still tries to
+        # install the removed "tools" package and fails on current images.
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKMANAGER=$(command -v sdkmanager || true)
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found under $ANDROID_HOME"
+            exit 1
+          fi
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.1.12297006"
+          ls "$ANDROID_HOME/ndk"
+
+      - name: Build native libraries
+        run: |
+          export NDK_ROOT=$ANDROID_HOME/ndk/27.1.12297006
+          cd mars
+          python3 build_android.py "${{ needs.version.outputs.tag }}" $ABIS
+          python3 build_android.py "${{ needs.version.outputs.tag }}" --xlog-only $ABIS
+
+      - name: Verify native libraries
+        # build_android.py now exits non-zero on failure, but a partial build
+        # (one ABI missing its .so) would still assemble a broken AAR, so check
+        # every ABI of every module explicitly.
+        run: |
+          set -euo pipefail
+          MISSING=0
+          for ABI in $ABIS; do
+            for LIB_DIR in libraries/mars_xlog_sdk/libs/$ABI libraries/mars_android_sdk/libs/$ABI; do
+              SO_COUNT=$(find "mars/$LIB_DIR" -name '*.so' 2>/dev/null | wc -l | tr -d ' ')
+              if [ "$SO_COUNT" -eq 0 ]; then
+                echo "::error::no .so for $ABI in $LIB_DIR"
+                MISSING=1
+              fi
+            done
+          done
+          if [ "$MISSING" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Build AARs
+        run: |
+          cd mars
+          ./gradlew -Prelease --no-daemon \
+            :libraries:mars_xlog_sdk:assembleRelease \
+            :libraries:mars_android_sdk:assembleRelease
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp mars/libraries/mars_xlog_sdk/build/outputs/aar/mars_xlog_sdk-release.aar "dist/$XLOG_AAR"
+          cp mars/libraries/mars_android_sdk/build/outputs/aar/mars_android_sdk-release.aar "dist/$CORE_AAR"
+          cd mars/libraries
+          zip -q -r "$GITHUB_WORKSPACE/dist/$NATIVE_ZIP" mars_xlog_sdk/libs mars_android_sdk/libs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mars-android
+          path: dist/
+
+  publish:
+    needs: [version, apple, android]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: MarsXlog.xcframework
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mars-android
+          path: dist
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          CHECKSUM=$(swift package compute-checksum "dist/$XCFRAMEWORK_ZIP")
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+
+      - name: Point Package.swift at this release
+        if: needs.version.outputs.is_new == 'true'
+        id: package
+        run: |
+          python3 - "${{ needs.version.outputs.tag }}" "${{ steps.checksum.outputs.checksum }}" <<'PY'
+          import re, sys
+          tag, checksum = sys.argv[1], sys.argv[2]
+          src = open('Package.swift').read()
+          src = re.sub(r'releases/download/[^/]+/', 'releases/download/%s/' % tag, src)
+          src = re.sub(r'checksum: "[a-f0-9]+"', 'checksum: "%s"' % checksum, src)
+          open('Package.swift', 'w').write(src)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: point Package.swift at ${{ needs.version.outputs.tag }}"
+          git push origin HEAD:"${{ github.ref_name }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          SHA: ${{ steps.package.outputs.sha || github.sha }}
+        run: |
+          cd dist
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # publish every artifact once, never overwrite: the SPM checksum in
+            # Package.swift is bound to the zip that was published for the tag
+            EXISTING=$(gh release view "$TAG" --json assets -q '.assets[].name')
+            for ARTIFACT in *.aar "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP"; do
+              if grep -qx "$ARTIFACT" <<< "$EXISTING"; then
+                echo "skip $ARTIFACT, already published for $TAG"
+              else
+                gh release upload "$TAG" "$ARTIFACT"
+              fi
+            done
+          else
+            gh release create "$TAG" --target "$SHA" --title "$TAG" --generate-notes \
+              *.aar "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP"
+          fi
+
+      - name: Create git tag
+        if: needs.version.outputs.is_new == 'true'
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          SHA: ${{ steps.package.outputs.sha || github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$TAG" "$SHA"
+          git push -f origin "$TAG"
+
+      - name: Trigger the JitPack build
+        # JitPack builds lazily, so nothing would publish the Android artifacts
+        # to jitpack.io until a consumer asks for them. Kick the build off once
+        # the release assets are online and wait for the result.
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          REPO=com.github.orangeboyChen.mars
+          VERSION="${TAG#v}"
+          URL="https://jitpack.io/api/builds/$REPO/$TAG"
+          LOG="https://jitpack.io/$REPO/$TAG/build.log"
+          status() {
+            curl -sSfL "$URL" | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          print((d.get("com.github.orangeboyChen", {}).get("mars", {}).get("'"$VERSION"'")
+                 or d.get("com.github.orangeboyChen", {}).get("mars", {}).get("'"$TAG"'") or ""))'
+          }
+          curl -sSfL "$URL" > /dev/null || { echo "::warning::could not reach jitpack.io"; exit 0; }
+          for i in $(seq 1 40); do
+            STATE=$(status)
+            echo "JitPack $TAG: ${STATE:-unknown}"
+            case "$(echo "$STATE" | tr '[:upper:]' '[:lower:]')" in
+              ok) echo "JitPack build succeeded"; exit 0 ;;
+              error)
+                echo "::error::JitPack build failed, see $LOG"
+                curl -sSfL "$LOG" | tail -40 || true
+                exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::warning::JitPack build still running after 20 minutes, check $LOG"
+
+      - name: Summary
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          {
+            echo "### $TAG"
+            echo ""
+            echo '```swift'
+            echo ".package(url: \"https://github.com/orangeboyChen/mars\", from: \"${TAG#v}\")"
+            echo '```'
+            echo ""
+            echo "SPM checksum: \`${{ steps.checksum.outputs.checksum }}\`"
+            echo ""
+            echo '```gradle'
+            echo "implementation 'com.github.orangeboyChen.mars:mars_xlog_sdk:$TAG'"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

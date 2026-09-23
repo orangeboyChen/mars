@@ -30,7 +30,15 @@
 #include <locale>
 
 #include "comm/xlogger/xlogger.h"
+
+#ifdef __APPLE__
+// No OpenSSL on Apple platforms (and the prebuilt OpenSSL in mars/openssl has no
+// simulator arm64 slice), use CommonCrypto instead so that a framework built
+// from this code is self contained.
+#include <CommonCrypto/CommonDigest.h>
+#else
 #include "openssl/md5.h"
+#endif
 
 #ifdef WIN32
 #define snprintf _snprintf
@@ -334,8 +342,13 @@ std::string BufferMD5(const std::string &buf) {
 }
 
 std::string BufferMD5(const void* buffer, size_t size) {
+#ifdef __APPLE__
+    uint8_t md5[CC_MD5_DIGEST_LENGTH] = {0};
+    CC_MD5(static_cast<const void*>(buffer), static_cast<CC_LONG>(size), md5);
+#else
     uint8_t md5[MD5_DIGEST_LENGTH] = {0};
     MD5(static_cast<const unsigned char*>(buffer), static_cast<unsigned int>(size), md5);
+#endif
     return strutil::MD5DigestToBase16(md5);
 }
 

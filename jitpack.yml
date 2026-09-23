@@ -1,0 +1,32 @@
+# https://docs.jitpack.io — Android libraries on JitPack
+#
+#   implementation 'com.github.orangeboyChen.mars:mars-xlog:v0.0.2'
+#   implementation 'com.github.orangeboyChen.mars:mars-core:v0.0.2'
+#
+# JitPack has an Android SDK but no NDK, so the native libraries built by
+# .github/workflows/release.yml are downloaded from the release of the same
+# tag before the AARs are assembled.
+
+jdk:
+  - openjdk17
+
+before_install:
+  - 'echo "VERSION=$VERSION GIT_DESCRIBE=$GIT_DESCRIBE"'
+  - |
+    for V in "$VERSION" "v$VERSION" "$GIT_DESCRIBE" "$(git describe --tags --abbrev=0 2>/dev/null)"; do
+      [ -n "$V" ] || continue
+      echo "trying release assets of $V"
+      if curl -sSfL -o mars-android-native.zip \
+          "https://github.com/orangeboyChen/mars/releases/download/$V/mars-android-native.zip"; then
+        echo "downloaded mars-android-native.zip from $V"
+        break
+      fi
+    done
+  - test -s mars-android-native.zip || { echo "::error::could not download mars-android-native.zip"; exit 1; }
+  - unzip -q -o mars-android-native.zip -d mars/libraries
+  - find mars/libraries -name '*.so' | sort
+
+install:
+  - cd mars && ./gradlew -Prelease --no-daemon
+    :libraries:mars_xlog_sdk:publishToMavenLocal
+    :libraries:mars_android_sdk:publishToMavenLocal
