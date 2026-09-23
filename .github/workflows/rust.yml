@@ -20,6 +20,7 @@ on:
       - 'mars/gradle/**'
       - 'mars/build.gradle.kts'
       - 'mars/settings.gradle.kts'
+      - 'samples/android/**'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
@@ -32,6 +33,7 @@ on:
       - 'mars/gradle/**'
       - 'mars/build.gradle.kts'
       - 'mars/settings.gradle.kts'
+      - 'samples/android/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -232,6 +234,33 @@ jobs:
             fi
             echo "$abi: $exports JNI exports"
           done
+
+      # End-to-end check: the sample consumes the AAR straight from
+      # mavenLocal and must build without an NDK.
+      - name: Publish the AAR locally
+        working-directory: mars
+        run: ./gradlew --no-daemon -Prelease :libraries:mars_xlog_sdk:publishToMavenLocal
+
+      - name: Build the sample app
+        working-directory: samples/android/xlogSample
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Check the sample APK
+        working-directory: samples/android/xlogSample
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "$apk" | grep -q "lib/$abi/libmarsxlog.so" || {
+              echo "::error::$apk is missing lib/$abi/libmarsxlog.so"
+              exit 1
+            }
+          done
+          if unzip -l "$apk" | grep -q 'libc++_shared'; then
+            echo "::error::$apk still ships the C++ runtime"
+            exit 1
+          fi
+          echo "sample APK carries only the Rust libmarsxlog.so"
 
   apple:
     name: build (${{ matrix.target }})
