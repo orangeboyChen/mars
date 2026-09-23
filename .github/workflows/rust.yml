@@ -145,6 +145,18 @@ jobs:
             fi
             echo "$slice: $(basename "$lib") exports mars_xlog_open"
           done
+      # The Swift API of Sources/MarsXlog is what Package.swift publishes, so
+      # it has to keep compiling against the module map of the slice.
+      - name: Check the Swift API
+        run: |
+          set -euo pipefail
+          sdk=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          swiftc -typecheck \
+            -sdk "$sdk" \
+            -target arm64-apple-ios12.0-simulator \
+            -I mars/cmake_build/XCFramework/MarsXlog.xcframework/ios-arm64_x86_64-simulator/Headers \
+            Sources/MarsXlog/MarsXlog.swift
+
       - uses: actions/upload-artifact@v4
         with:
           name: MarsXlog.xcframework
