@@ -37,8 +37,8 @@ let package = Package(
         // Built by mars/build_xcframework.py, see docs/distribution.md.
         .binaryTarget(
             name: "MarsXlogBinary",
-            url: "https://github.com/orangeboyChen/mars/releases/download/v2.0.0/MarsXlog.xcframework.zip",
-            checksum: "887078a37ec0ec44648436049fc64c1891a96b1c79a151bb7a72875ea1446930"
+            url: "https://github.com/orangeboyChen/mars/releases/download/v2.0.1/MarsXlog.xcframework.zip",
+            checksum: "b6980cb8104844dfaddd8d5b41caabd7baf208f937fbce9fa2a8a685b187b735"
         ),
         // Thin Swift wrapper: a binary target can not declare dependencies on
         // system libraries, and the static library needs libc++ and libz, so
