@@ -13,7 +13,7 @@ android {
         minSdkVersion 19
         targetSdkVersion 29
         ndk {
-            abiFilters "armeabi-v7a", "arm64-v8a"
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86_64"
         }
     }
     sourceSets {
@@ -36,6 +36,20 @@ android {
     buildTypes {
         release {
             proguardFile 'proguard-rules.pro'
+        }
+    }
+}
+
+// JitPack builds the AAR from source and has no NDK, so the prebuilt native
+// libraries published with the release must already be in `libs/<abi>/`
+// (see ../../jitpack.yml). Fail loudly instead of shipping an AAR without .so.
+afterEvaluate {
+    if (System.getenv('JITPACK') == 'true') {
+        def abis = file('libs').listFiles()?.findAll { it.directory } ?: []
+        if (abis.isEmpty()) {
+            throw new GradleException(
+                    "No prebuilt native libraries found in ${file('libs')}. " +
+                    "jitpack.yml downloads them from the GitHub release, check its 'before_install' step.")
         }
     }
 }

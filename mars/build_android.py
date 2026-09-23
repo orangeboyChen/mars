@@ -200,6 +200,9 @@ def build_android(incremental, arch, target_option=''):
     print("use time:%d s" % (int(after_time - before_time)))
     return True
 
+XLOG_ONLY_TARGET = '--target libzstd_static marsxlog'
+
+
 def main(incremental, archs, target_option='', tag=''):
     if not check_ndk_env():
         return
@@ -218,10 +221,17 @@ def main(incremental, archs, target_option='', tag=''):
 
 if __name__ == '__main__':
 
+    # `python3 build_android.py <tag> <abi...>` builds the full mars sdk,
+    # `python3 build_android.py <tag> --xlog-only <abi...>` builds mars-xlog only.
+    argv = sys.argv[1:]
+    xlog_only = '--xlog-only' in argv
+    if xlog_only:
+        argv.remove('--xlog-only')
+
     while True:
-        if len(sys.argv) >= 3:
-            archs = sys.argv[2:]
-            main(False, archs, tag=sys.argv[1])
+        if len(argv) >= 2:
+            archs = argv[1:]
+            main(False, archs, target_option=XLOG_ONLY_TARGET if xlog_only else '', tag=argv[0])
             break
         else:
             archs = {'armeabi-v7a', 'arm64-v8a'}

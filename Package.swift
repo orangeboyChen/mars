@@ -28,7 +28,7 @@ let package = Package(
         .binaryTarget(
             name: "MarsXlog",
             url: "https://github.com/orangeboyChen/mars/releases/download/v0.1.0/MarsXlog.xcframework.zip",
-            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+            checksum: "70b43d3c93ea50895347e8b480120da3a99e92da5fc268808cc60266ed8bd082"
         )
     ]
 )
