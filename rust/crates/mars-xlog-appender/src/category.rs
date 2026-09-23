@@ -191,19 +191,20 @@ pub fn release_xlogger_instance(nameprefix: &str) {
     }
 }
 
-fn with_category<R>(handle: XloggerHandle, f: impl FnOnce(&XloggerCategory) -> R) -> Option<R> {
+/// Looks a category up and returns a copy, so the caller never runs with the
+/// registry lock held — writing a record does file I/O.
+fn lookup(handle: XloggerHandle) -> Option<XloggerCategory> {
     registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .categories
         .get(&handle)
-        .map(f)
+        .copied()
 }
 
-/// Runs `f` against the default logger (handle `0`).
-fn default_category<R>(f: impl FnOnce(&XloggerCategory) -> R) -> R {
-    let registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-    f(&registry.default)
+/// A copy of the default logger (handle `0`).
+fn default_category() -> XloggerCategory {
+    registry().lock().unwrap_or_else(|e| e.into_inner()).default
 }
 
 fn with_category_mut(handle: XloggerHandle, f: impl FnOnce(&mut XloggerCategory)) {
@@ -223,20 +224,30 @@ fn with_category_mut(handle: XloggerHandle, f: impl FnOnce(&mut XloggerCategory)
 /// instance was released) writes nothing: the module promises that a stale
 /// handle is a no-op, not a fall back to the default logger.
 pub fn xlogger_write(handle: XloggerHandle, info: Option<&XLoggerInfo>, log: Option<&str>) -> bool {
-    if handle == DEFAULT_HANDLE {
-        return default_category(|category| category.write(info, log));
-    }
-    with_category(handle, |category| category.write(info, log)).unwrap_or(false)
+    let category = if handle == DEFAULT_HANDLE {
+        default_category()
+    } else {
+        match lookup(handle) {
+            Some(category) => category,
+            None => return false,
+        }
+    };
+    category.write(info, log)
 }
 
 /// `mars::xlog::IsEnabledFor`.
 ///
 /// `false` for an unknown non-zero handle, so nothing is written through it.
 pub fn is_enabled_for(handle: XloggerHandle, level: LogLevel) -> bool {
-    if handle == DEFAULT_HANDLE {
-        return default_category(|category| category.is_enabled_for(level));
-    }
-    with_category(handle, |category| category.is_enabled_for(level)).unwrap_or(false)
+    let category = if handle == DEFAULT_HANDLE {
+        default_category()
+    } else {
+        match lookup(handle) {
+            Some(category) => category,
+            None => return false,
+        }
+    };
+    category.is_enabled_for(level)
 }
 
 /// `mars::xlog::GetLevel`.
@@ -244,9 +255,9 @@ pub fn is_enabled_for(handle: XloggerHandle, level: LogLevel) -> bool {
 /// `None` for an unknown non-zero handle.
 pub fn get_level(handle: XloggerHandle) -> Option<LogLevel> {
     if handle == DEFAULT_HANDLE {
-        return Some(default_category(|category| category.level()));
+        return Some(default_category().level());
     }
-    with_category(handle, |category| category.level())
+    lookup(handle).map(|category| category.level())
 }
 
 /// `mars::xlog::SetLevel`.

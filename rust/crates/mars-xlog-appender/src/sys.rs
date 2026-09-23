@@ -19,6 +19,16 @@ use std::sync::OnceLock;
 /// hand out a per-thread counter instead, which made logs written by Rust and
 /// C++ in the same process impossible to correlate.
 pub fn thread_id() -> i64 {
+    // The OS tid cannot change for a thread, so it is looked up once and then
+    // cached: this is called for every single log record.
+    thread_local! {
+        static TID: i64 = os_thread_id();
+    }
+    TID.with(|tid| *tid)
+}
+
+/// The raw OS query behind [`thread_id`].
+fn os_thread_id() -> i64 {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         // `gettid` never fails and needs no errno handling.
