@@ -149,4 +149,51 @@ void mars_xlog_set_max_alive_duration(long long seconds);
  */
 int mars_xlog_current_log_path(char* out, unsigned int len);
 
+/* ---- logger instances (mars::xlog::NewXloggerInstance and friends) ----
+ *
+ * Each instance owns an appender: its own log directory, prefix, key, mode and
+ * cache file. Handle 0 means "the process-wide appender opened by
+ * mars_xlog_open".
+ */
+
+/* Returns the instance handle, or 0 on a null/invalid config. */
+long long mars_xlog_new_instance(const MarsXLogConfig* config, int level);
+
+/* The handle registered for name_prefix, or 0 when there is none. */
+long long mars_xlog_get_instance(const char* name_prefix);
+
+/* Releases the instance and closes its appender. */
+void mars_xlog_release_instance(const char* name_prefix);
+
+/* Writes through an instance; honours the instance's level. */
+void mars_xlog_write_instance(long long instance,
+                              int level,
+                              const char* tag,
+                              const char* filename,
+                              const char* func_name,
+                              int line,
+                              const char* log);
+
+/* 1 when the instance would write this level, 0 otherwise. */
+int mars_xlog_is_enabled_for(long long instance, int level);
+
+/* The instance's level, or -1 for an unknown handle. */
+int mars_xlog_get_level(long long instance);
+
+/* SetLevel for an instance (0 = the default logger). */
+void mars_xlog_set_level_instance(long long instance, int level);
+
+/* appender_setmode: switches the process-wide appender between async/sync. */
+void mars_xlog_set_mode(int mode);
+
+/* SetAppenderMode for an instance. */
+void mars_xlog_set_mode_instance(long long instance, int mode);
+
+/* Drains an instance; sync != 0 waits for the write to complete. */
+void mars_xlog_flush_instance(long long instance, int sync);
+
+/* The cache directory, or a negative MARS_XLOG_ERR_* code. */
+int mars_xlog_current_log_cache_path(char* out, unsigned int len);
+
+
 #endif /* MARS_XLOG_H_ */

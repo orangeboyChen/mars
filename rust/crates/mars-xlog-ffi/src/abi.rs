@@ -301,26 +301,39 @@ pub extern "C" fn mars_xlog_current_log_path(out: *mut c_char, len: c_uint) -> c
             return MARS_XLOG_ERR_NO_PATH;
         };
 
-        let bytes = path_to_bytes(&path);
-        // `+ 1` for the terminating NUL.
-        if bytes.len() + 1 > len as usize {
-            return MARS_XLOG_ERR_NO_SPACE;
-        }
-
-        // SAFETY: `out` is non-null and — per this symbol's contract — points to
-        // at least `len` writable bytes owned by the caller. `len >= 1` was
-        // checked above, and `bytes.len() + 1 <= len` guarantees both the copy
-        // and the NUL write stay in bounds.
-        unsafe {
-            // Sized by what is written, not by what the caller claimed: a
-            // reference must never cover memory the caller did not hand over.
-            let dst = std::slice::from_raw_parts_mut(out as *mut c_uchar, bytes.len() + 1);
-            dst[..bytes.len()].copy_from_slice(&bytes);
-            dst[bytes.len()] = 0;
-        }
-
-        bytes.len() as c_int
+        // SAFETY: `out` is non-null (checked above) and the caller promises
+        // `len` writable bytes.
+        unsafe { write_path_into(path_to_bytes(&path), out as *mut c_uchar, len) }
     })
+}
+
+/// Copies `bytes` plus a terminating NUL into the caller's buffer.
+///
+/// # Safety
+///
+/// `out` must be non-null and point to at least `len` writable bytes.
+unsafe fn write_path_into(bytes: Vec<u8>, out: *mut c_uchar, len: c_uint) -> c_int {
+    if out.is_null() {
+        return MARS_XLOG_ERR_NULL_OUT;
+    }
+    if len == 0 {
+        return MARS_XLOG_ERR_NO_SPACE;
+    }
+    // `+ 1` for the terminating NUL.
+    if bytes.len() + 1 > len as usize {
+        return MARS_XLOG_ERR_NO_SPACE;
+    }
+
+    // SAFETY: `len >= 1` and `bytes.len() + 1 <= len` were checked above, so
+    // both the copy and the NUL write stay in the caller's buffer. The slice is
+    // sized by what is written, not by what the caller claimed.
+    unsafe {
+        let dst = std::slice::from_raw_parts_mut(out, bytes.len() + 1);
+        dst[..bytes.len()].copy_from_slice(&bytes);
+        dst[bytes.len()] = 0;
+    }
+
+    bytes.len() as c_int
 }
 
 /// Maps a raw `TLogLevel` onto [`LogLevel`]; `None` for anything outside
@@ -367,6 +380,233 @@ fn path_to_bytes(path: &Path) -> Vec<u8> {
     {
         path.to_string_lossy().into_owned().into_bytes()
     }
+}
+
+/// Creates a logger instance with its own appender.
+///
+/// This is the C counterpart of `mars::xlog::NewXloggerInstance`: unlike
+/// [`mars_xlog_open`], which configures the single process-wide appender, each
+/// instance gets its own log directory, prefix, key, mode and cache file.
+///
+/// Returns the instance handle, or `0` when `config` is null / invalid or the
+/// appender cannot be opened. A level outside `0..=6` is reported as
+/// [`MARS_XLOG_ERR_BAD_MODE`]-style failure by returning `0`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn mars_xlog_new_instance(
+    config: *const MarsXLogConfig,
+    level: c_int,
+) -> c_longlong {
+    guard(0, || {
+        // SAFETY: null-checked inside `ptr_to_ref`.
+        let Some(cfg) = (unsafe { cstr::ptr_to_ref(config) }) else {
+            return 0;
+        };
+        let mode = match cfg.mode {
+            x if x == MarsAppenderMode::Async as c_int => AppenderMode::Async,
+            x if x == MarsAppenderMode::Sync as c_int => AppenderMode::Sync,
+            _ => return 0,
+        };
+        let compress_mode = match cfg.compress_mode {
+            x if x == MarsCompressMode::Zlib as c_int => CompressMode::Zlib,
+            x if x == MarsCompressMode::Zstd as c_int => CompressMode::Zstd,
+            _ => return 0,
+        };
+        let level = match to_log_level(level) {
+            Some(level) => level,
+            None => return 0,
+        };
+
+        // SAFETY: every field pointer is null-checked inside the helpers.
+        let (log_dir, name_prefix, pub_key, cache_dir) = unsafe {
+            (
+                cstr::ptr_to_path_buf(cfg.log_dir),
+                cstr::ptr_to_str_or_empty(cfg.name_prefix),
+                cstr::ptr_to_str_or_empty(cfg.pub_key),
+                cstr::ptr_to_path_buf(cfg.cache_dir),
+            )
+        };
+        if log_dir.as_os_str().is_empty() {
+            return 0;
+        }
+
+        let rust_config = XLogConfig {
+            mode,
+            logdir: log_dir,
+            // An empty prefix stays empty, as in the C++ XLogConfig.
+            nameprefix: name_prefix.to_string(),
+            pub_key: pub_key.to_string(),
+            compress_mode,
+            compress_level: if cfg.compress_level > 0 {
+                cfg.compress_level
+            } else {
+                XLogConfig::default().compress_level
+            },
+            cachedir: if cache_dir.as_os_str().is_empty() {
+                None
+            } else {
+                Some(cache_dir)
+            },
+            cache_days: cfg.cache_days.max(0) as u32,
+        };
+        mars_xlog_appender::new_xlogger_instance(&rust_config, level) as c_longlong
+    })
+}
+
+/// The handle registered for `name_prefix`, or `0` when there is none.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn mars_xlog_get_instance(name_prefix: *const c_char) -> c_longlong {
+    guard(0, || {
+        // SAFETY: null is reported as an empty string by the helper.
+        let prefix = unsafe { cstr::ptr_to_str_or_empty(name_prefix) };
+        mars_xlog_appender::get_xlogger_instance(prefix) as c_longlong
+    })
+}
+
+/// Releases the instance registered for `name_prefix` and closes its appender.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn mars_xlog_release_instance(name_prefix: *const c_char) {
+    let _ = guard(0, || {
+        // SAFETY: null is reported as an empty string by the helper.
+        let prefix = unsafe { cstr::ptr_to_str_or_empty(name_prefix) };
+        mars_xlog_appender::release_xlogger_instance(prefix);
+        0
+    });
+}
+
+/// Writes through a specific instance (`0` = the process-wide appender).
+///
+/// Unlike [`mars_xlog_write`], this honours the instance's own level: a record
+/// below it is dropped, and an unknown non-zero handle writes nothing.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn mars_xlog_write_instance(
+    instance: c_longlong,
+    level: c_int,
+    tag: *const c_char,
+    filename: *const c_char,
+    func_name: *const c_char,
+    line: c_int,
+    log: *const c_char,
+) {
+    let _ = guard(0, || {
+        // SAFETY: every pointer is null-checked inside the helpers.
+        let (tag, filename, func_name, log) = unsafe {
+            (
+                cstr::ptr_to_str_or_empty(tag),
+                cstr::ptr_to_str_or_empty(filename),
+                cstr::ptr_to_str_or_empty(func_name),
+                cstr::ptr_to_str_or_empty(log),
+            )
+        };
+        if log.is_empty() {
+            return 0;
+        }
+        let info = XLoggerInfo {
+            level: to_log_level(level).unwrap_or(LogLevel::Verbose),
+            tag: Some(tag.to_owned()),
+            filename: Some(filename.to_owned()),
+            func_name: Some(func_name.to_owned()),
+            line,
+            // -1 makes the category fill these in from the OS.
+            pid: -1,
+            tid: -1,
+            maintid: -1,
+            timeval: state::now_timeval(),
+        };
+        mars_xlog_appender::xlogger_write(instance as u64, Some(&info), Some(log));
+        0
+    });
+}
+
+/// `mars::xlog::IsEnabledFor` — `0` when the instance would drop this level.
+#[no_mangle]
+pub extern "C" fn mars_xlog_is_enabled_for(instance: c_longlong, level: c_int) -> c_int {
+    guard(0, || match to_log_level(level) {
+        Some(level) => c_int::from(mars_xlog_appender::is_enabled_for(instance as u64, level)),
+        None => 0,
+    })
+}
+
+/// `mars::xlog::GetLevel` — the instance's level, or `-1` when the handle is
+/// unknown.
+#[no_mangle]
+pub extern "C" fn mars_xlog_get_level(instance: c_longlong) -> c_int {
+    guard(-1, || {
+        match mars_xlog_appender::get_level(instance as u64) {
+            Some(level) => level as c_int,
+            None => -1,
+        }
+    })
+}
+
+/// `mars::xlog::SetLevel` for an instance (`0` = the default logger).
+#[no_mangle]
+pub extern "C" fn mars_xlog_set_level_instance(instance: c_longlong, level: c_int) {
+    let _ = guard(0, || {
+        if let Some(level) = to_log_level(level) {
+            mars_xlog_appender::set_level(instance as u64, level);
+        }
+        0
+    });
+}
+
+/// `mars::xlog::appender_setmode` — switches the process-wide appender
+/// between async and sync.
+#[no_mangle]
+pub extern "C" fn mars_xlog_set_mode(mode: c_int) {
+    let _ = guard(0, || {
+        let mode = match mode {
+            x if x == MarsAppenderMode::Async as c_int => AppenderMode::Async,
+            x if x == MarsAppenderMode::Sync as c_int => AppenderMode::Sync,
+            _ => return 0,
+        };
+        mars_xlog_appender::appender_set_mode(mode);
+        0
+    });
+}
+
+/// `mars::xlog::SetAppenderMode` for an instance.
+#[no_mangle]
+pub extern "C" fn mars_xlog_set_mode_instance(instance: c_longlong, mode: c_int) {
+    let _ = guard(0, || {
+        let mode = match mode {
+            x if x == MarsAppenderMode::Async as c_int => AppenderMode::Async,
+            x if x == MarsAppenderMode::Sync as c_int => AppenderMode::Sync,
+            _ => return 0,
+        };
+        mars_xlog_appender::set_appender_mode(instance as u64, mode);
+        0
+    });
+}
+
+/// Drains an instance (`sync` non-zero waits for the write to complete).
+#[no_mangle]
+pub extern "C" fn mars_xlog_flush_instance(instance: c_longlong, sync: c_int) {
+    let _ = guard(0, || {
+        mars_xlog_appender::flush(instance as u64, sync != 0);
+        0
+    });
+}
+
+/// The cache directory of an instance; see [`mars_xlog_current_log_path`] for
+/// the buffer contract (`0` when there is none).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn mars_xlog_current_log_cache_path(out: *mut c_uchar, len: c_uint) -> c_int {
+    guard(MARS_XLOG_ERR_PANIC, || {
+        if out.is_null() {
+            return MARS_XLOG_ERR_NULL_OUT;
+        }
+        let Some(path) = mars_xlog_appender::appender_get_current_log_cache_path() else {
+            return MARS_XLOG_ERR_NO_PATH;
+        };
+        // SAFETY: the caller's buffer contract is the same as for
+        // `mars_xlog_current_log_path`.
+        unsafe { write_path_into(path.as_os_str().as_encoded_bytes().to_vec(), out, len) }
+    })
 }
 
 #[cfg(test)]
