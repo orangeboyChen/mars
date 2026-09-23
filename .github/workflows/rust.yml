@@ -1,0 +1,159 @@
+name: Rust
+
+# Build / lint / test gate for the Rust port of the xlog pipeline that lives in
+# ./rust. It is deliberately independent from the C++/CMake release workflows:
+# the Rust workspace must stay green on every push and PR that touches it.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: '-D warnings'
+
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  format:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: cargo test
+        run: cargo test --workspace --all-targets
+      - name: cargo test (release)
+        run: cargo test --workspace --release
+
+  build:
+    name: build (release)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo build --workspace --release --all-targets
+
+  android:
+    name: build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 27.1.12297006
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            clang: aarch64-linux-android24-clang
+          - target: armv7-linux-androideabi
+            clang: armv7a-linux-androideabi24-clang
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: android-actions/setup-android@v3
+      - name: Install the Android NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # `zstd-sys` compiles C, so both cc-rs and rustc need the NDK clang. The
+      # env var names are derived from the target (dashes become underscores),
+      # so they are exported from the shell rather than from `env:`.
+      # Only the FFI crate is built: it is what the Android glue links against
+      # and it pulls the rest of the workspace in through path deps.
+      - name: cargo build
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          key="$(printf '%s' "$target" | tr '-' '_' | tr '[:lower:]' '[:upper:]')"
+          ndk_bin="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export "CC_${key}=$ndk_bin/${{ matrix.clang }}"
+          export "AR_${key}=$ndk_bin/llvm-ar"
+          export "CARGO_TARGET_${key}_LINKER=$ndk_bin/${{ matrix.clang }}"
+          cargo build --release -p mars-xlog-ffi --target "$target"
+
+  apple:
+    name: build (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-ios
+          - aarch64-apple-ios-sim
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo build --release -p mars-xlog-ffi --target ${{ matrix.target }}
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo doc --workspace --no-deps

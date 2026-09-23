@@ -116,3 +116,7 @@ cmake_build
 *.settings
 mars/cmake-build-debug
 mars/openssl/include/openssl/*
+
+# Rust port of the xlog pipeline (./rust)
+rust/target/
+**/*.rs.bk
