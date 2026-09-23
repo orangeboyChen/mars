@@ -33,6 +33,8 @@ permissions:
 env:
   XCFRAMEWORK_ZIP: MarsXlog.xcframework.zip
   NATIVE_ZIP: mars-android-native.zip
+  XLOG_AAR: mars-xlog.aar
+  CORE_AAR: mars-core.aar
 
 jobs:
   version:
@@ -82,7 +84,13 @@ jobs:
           SKIP=false
           if gh release view "$TAG" >/dev/null 2>&1; then
             ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
-            if grep -qx "$XCFRAMEWORK_ZIP" <<< "$ASSETS" && grep -qx "$NATIVE_ZIP" <<< "$ASSETS"; then
+            # complete means *all four* artifacts: a partial release must stay
+            # repairable, otherwise a rerun skips the build jobs forever
+            COMPLETE=true
+            for ASSET in "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP" "$XLOG_AAR" "$CORE_AAR"; do
+              grep -qx "$ASSET" <<< "$ASSETS" || COMPLETE=false
+            done
+            if [ "$COMPLETE" = true ]; then
               SKIP=true
             fi
           fi
@@ -164,6 +172,26 @@ jobs:
           python3 build_android.py "${{ needs.version.outputs.tag }}" $ABIS
           python3 build_android.py "${{ needs.version.outputs.tag }}" --xlog-only $ABIS
 
+      - name: Verify native libraries
+        # build_android.py now exits non-zero on failure, but a partial build
+        # (one ABI missing its .so) would still assemble a broken AAR, so check
+        # every ABI of every module explicitly.
+        run: |
+          set -euo pipefail
+          MISSING=0
+          for ABI in $ABIS; do
+            for LIB_DIR in libraries/mars_xlog_sdk/libs/$ABI libraries/mars_android_sdk/libs/$ABI; do
+              SO_COUNT=$(find "mars/$LIB_DIR" -name '*.so' 2>/dev/null | wc -l | tr -d ' ')
+              if [ "$SO_COUNT" -eq 0 ]; then
+                echo "::error::no .so for $ABI in $LIB_DIR"
+                MISSING=1
+              fi
+            done
+          done
+          if [ "$MISSING" -ne 0 ]; then
+            exit 1
+          fi
+
       - name: Build AARs
         run: |
           cd mars
@@ -174,8 +202,8 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p dist
-          cp mars/libraries/mars_xlog_sdk/build/outputs/aar/mars_xlog_sdk-release.aar dist/mars-xlog.aar
-          cp mars/libraries/mars_android_sdk/build/outputs/aar/mars_android_sdk-release.aar dist/mars-core.aar
+          cp mars/libraries/mars_xlog_sdk/build/outputs/aar/mars_xlog_sdk-release.aar "dist/$XLOG_AAR"
+          cp mars/libraries/mars_android_sdk/build/outputs/aar/mars_android_sdk-release.aar "dist/$CORE_AAR"
           cd mars/libraries
           zip -q -r "$GITHUB_WORKSPACE/dist/$NATIVE_ZIP" mars_xlog_sdk/libs mars_android_sdk/libs
 
