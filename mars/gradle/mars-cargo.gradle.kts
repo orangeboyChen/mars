@@ -168,8 +168,6 @@ val cargoBuildTasks: List<TaskProvider<Exec>> = cargoAbis.map { abi ->
         inputs.dir(rustWorkspace.resolve("crates"))
         inputs.file(rustWorkspace.resolve("Cargo.toml"))
         inputs.file(rustWorkspace.resolve("Cargo.lock"))
-        // 16 KiB page size and any other per-target rustflags live here.
-        inputs.file(rustWorkspace.resolve(".cargo/config.toml"))
         inputs.property("minApi", nativeMinApi)
         inputs.property("ndk", ndkBin.absolutePath)
         inputs.property("rustflags", rustflags)

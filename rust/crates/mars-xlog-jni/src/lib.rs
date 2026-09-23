@@ -46,9 +46,9 @@ fn now_timeval() -> (i64, i64) {
     }
 }
 
-/// `Xlog.LEVEL_*` — Java's 0..=5 map onto `TLogLevel`, and 6 (`LEVEL_NONE`)
-/// has no `LogLevel` counterpart, so it is treated as "log everything" here;
-/// callers that want logging off should not call the writer at all.
+/// `Xlog.LEVEL_*` — Java's 0..=5 map onto `TLogLevel` and `LEVEL_NONE` onto
+/// `kLevelNone`. A negative level logs everything, exactly like
+/// `(TLogLevel)-1` did in the C++.
 fn level_from_java(level: jint) -> LogLevel {
     match level {
         0 => LogLevel::Verbose,
@@ -56,6 +56,9 @@ fn level_from_java(level: jint) -> LogLevel {
         2 => LogLevel::Info,
         3 => LogLevel::Warn,
         4 => LogLevel::Error,
+        5 => LogLevel::Fatal,
+        6 => LogLevel::None,
+        _ if level < 0 => LogLevel::Verbose,
         _ => LogLevel::Fatal,
     }
 }
@@ -167,6 +170,19 @@ fn java_string(env: &mut JNIEnv<'_>, value: &JObject<'_>) -> String {
     })
 }
 
+/// `appender_open` plus the level of the Java config, i.e. what
+/// `Java2C_Xlog.cc` did with `appender_open(config); xlogger_SetLevel(level);`.
+///
+/// `XLogConfig` carries no level, and the level lives in the category registry
+/// rather than in the appender, so it is applied even when the open failed
+/// (already open, unusable log directory): the C++ called `xlogger_SetLevel`
+/// unconditionally, and `Log.v()/d()` in Java are gated on
+/// `Xlog.getLogLevel(0)`, which reads exactly this value.
+fn open_appender(config: XLogConfig, level: LogLevel) {
+    let _ = mars_xlog_appender::appender_open(config);
+    set_level(DEFAULT_HANDLE, level);
+}
+
 /// `Xlog.appenderOpen`.
 #[no_mangle]
 pub extern "system" fn Java_com_tencent_mars_xlog_Xlog_appenderOpen<'local>(
@@ -178,13 +194,7 @@ pub extern "system" fn Java_com_tencent_mars_xlog_Xlog_appenderOpen<'local>(
         let Some((config, level)) = config_from_java(&mut env, &config) else {
             return;
         };
-        // `XLogConfig` carries no level: the C++ `appender_open` called
-        // `xlogger_SetLevel` with the level from the Java config, and
-        // `Log.v()/d()` are gated on `getLogLevel(0)` in Java, so the level
-        // has to be applied to the default category explicitly.
-        if mars_xlog_appender::appender_open(config).is_ok() {
-            set_level(mars_xlog_appender::DEFAULT_HANDLE, level);
-        }
+        open_appender(config, level);
     })
 }
 
@@ -397,4 +407,86 @@ pub extern "system" fn Java_com_tencent_mars_xlog_Xlog_setMaxAliveTime(
     seconds: jlong,
 ) {
     guard(|| set_max_alive_duration(instance as u64, seconds.max(0) as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mars_xlog_appender::is_enabled_for;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// The process-wide appender is a singleton, so the tests that open it
+    /// must not run concurrently.
+    fn singleton() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn logdir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mars-xlog-jni-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn config(dir: &std::path::Path) -> XLogConfig {
+        XLogConfig {
+            logdir: dir.to_path_buf(),
+            nameprefix: "Mars".to_owned(),
+            ..XLogConfig::default()
+        }
+    }
+
+    #[test]
+    fn level_from_java_maps_the_xlog_constants() {
+        assert_eq!(level_from_java(0), LogLevel::Verbose);
+        assert_eq!(level_from_java(1), LogLevel::Debug);
+        assert_eq!(level_from_java(2), LogLevel::Info);
+        assert_eq!(level_from_java(3), LogLevel::Warn);
+        assert_eq!(level_from_java(4), LogLevel::Error);
+        assert_eq!(level_from_java(5), LogLevel::Fatal);
+        assert_eq!(level_from_java(6), LogLevel::None);
+        // `(TLogLevel)-1` logged everything in the C++.
+        assert_eq!(level_from_java(-1), LogLevel::Verbose);
+    }
+
+    #[test]
+    fn level_none_disables_every_record() {
+        let _guard = singleton();
+        set_level(DEFAULT_HANDLE, LogLevel::None);
+        assert!(!is_enabled_for(DEFAULT_HANDLE, LogLevel::Fatal));
+        assert_eq!(level_to_java(get_level(DEFAULT_HANDLE).unwrap()), 6);
+        set_level(DEFAULT_HANDLE, LogLevel::Info);
+    }
+
+    #[test]
+    fn appender_open_applies_the_config_level_to_the_default_logger() {
+        let _guard = singleton();
+        let dir = logdir("level");
+        set_level(DEFAULT_HANDLE, LogLevel::Verbose);
+        open_appender(config(&dir), LogLevel::Warn);
+        // `Xlog.getLogLevel(0)` reads exactly this value.
+        assert_eq!(get_level(DEFAULT_HANDLE), Some(LogLevel::Warn));
+        assert!(!is_enabled_for(DEFAULT_HANDLE, LogLevel::Info));
+        mars_xlog_appender::appender_close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The C++ called `xlogger_SetLevel` whatever `appender_open` returned, so
+    /// a second `appenderOpen` still moves the level even though the singleton
+    /// refuses to open twice.
+    #[test]
+    fn the_level_is_applied_when_the_appender_is_already_open() {
+        let _guard = singleton();
+        let dir = logdir("reopen");
+        assert!(mars_xlog_appender::appender_open(config(&dir)).is_ok());
+        set_level(DEFAULT_HANDLE, LogLevel::Info);
+        assert!(mars_xlog_appender::appender_open(config(&dir)).is_err());
+        open_appender(config(&dir), LogLevel::Error);
+        assert_eq!(get_level(DEFAULT_HANDLE), Some(LogLevel::Error));
+        mars_xlog_appender::appender_close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -39,6 +39,11 @@ pub enum LogLevel {
     Error = 4,
     /// `kLevelFatal`
     Fatal = 5,
+    /// `kLevelNone` — nothing is logged. `TLogLevel` has it, and
+    /// `Xlog.LEVEL_NONE` passes it straight through, so the port needs it too:
+    /// without the variant `LEVEL_NONE` collapsed onto `Fatal` and kept the
+    /// worst records while dropping everything else.
+    None = 6,
 }
 
 /// `mars::xlog::TFileIOAction`.

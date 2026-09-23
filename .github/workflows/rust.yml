@@ -151,6 +151,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NDK_VERSION: 27.1.12297006
+      # An exported `RUSTFLAGS` replaces `target.<triple>.rustflags` of
+      # rust/.cargo/config.toml instead of extending it, so the 16 KiB page
+      # size has to ride along with `-D warnings`.
+      RUSTFLAGS: >-
+        -D warnings
+        -C link-arg=-Wl,-z,max-page-size=16384
+        -C link-arg=-Wl,-z,common-page-size=16384
       # The runner image already ships the Android SDK; it is pinned here
       # because the `cargo build` step derives the NDK path from it.
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -274,14 +281,19 @@ jobs:
               exit 1
             fi
             echo "$abi: $exports JNI exports"
-            # Android 15 devices use 16 KiB pages and refuse to load a 4 KiB
-            # ELF; lld only defaults to 16 KiB on newer NDKs, so assert it.
-            align=$("$readelf" -l "libraries/mars_xlog_sdk/build/generated/jniLibs/$abi/libmarsxlog.so" \
-              | awk '$1 == "LOAD" { print $NF; exit }')
-            if [ "$align" != "0x4000" ]; then
-              echo "::error::$abi libmarsxlog.so is $align aligned, expected 0x4000"
-              exit 1
-            fi
+            # Android 15 devices use 16 KiB pages and refuse to load an ELF
+            # whose segments are less than that; lld defaults to 4 KiB on the
+            # NDK releases CI installs. Check the copy inside the AAR, i.e.
+            # the file that actually ships, and accept any multiple of 16 KiB.
+            so=$(mktemp)
+            unzip -p "$aar" "jni/$abi/libmarsxlog.so" > "$so"
+            for align in $("$readelf" -l "$so" | awk '$1 == "LOAD" { print $NF }'); do
+              if [ $((16#${align#0x} % 16384)) -ne 0 ]; then
+                echo "::error::$abi libmarsxlog.so has a $align aligned LOAD segment"
+                exit 1
+              fi
+            done
+            rm -f "$so"
             echo "$abi: 16 KiB aligned"
           done
 

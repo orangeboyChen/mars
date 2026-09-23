@@ -16,6 +16,8 @@ xcshareddata
 /mars/libraries/*/libs/
 /mars/libraries/*/obj/
 /mars/libraries/*/.cxx/
+/mars/libraries/*/.gradle/
+/mars/libraries/*/local.properties/
 /mars/*/libs/
 !/mars/boost/libs/
 /samples/iOS/iOSDemo/Kernel/MarsLib/
