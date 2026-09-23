@@ -1,6 +1,6 @@
 # Distribution
 
-## iOS / Apple platforms — Swift Package Manager
+## Apple platforms — Swift Package Manager (iOS + watchOS)
 
 `Package.swift` in the repository root exposes the **xlog** module as a
 prebuilt `MarsXlog.xcframework` binary target:
@@ -38,16 +38,28 @@ target cannot declare system library dependencies, and the static library needs
 `libc++` and `libz`, so they are declared with `linkerSettings` on the wrapper
 and propagated to consumers.
 
+Supported platforms: iOS 12 and watchOS 9.
+
 Slices:
 
 | slice | architectures |
 |---|---|
 | `ios-arm64` | device arm64 |
 | `ios-arm64_x86_64-simulator` | simulator arm64 (Apple Silicon) + x86_64 (Intel) |
+| `watchos-arm64_arm64_32` | device arm64_32 + arm64 |
+| `watchos-arm64_x86_64-simulator` | simulator arm64 (Apple Silicon) + x86_64 (Intel) |
 
 > A fat library cannot hold a device arm64 and a simulator arm64 slice at the
 > same time, which is why the artefact is an `.xcframework` and each platform
 > variant is built separately.
+
+> watchOS starts at 9.0 because that is where armv7k (the 32-bit watches)
+> retired: a lower deployment target makes Xcode ask for an armv7k slice the
+> framework cannot ship, and the link fails inside the consumer app.
+
+The release workflow proves the binary really is consumable: after building the
+xcframework it points `Package.swift` at the local artefact and builds a
+throw-away consumer package for iOS, watchOS device and watchOS simulator.
 
 Because the framework is a binary target, no CMake / OpenSSL toolchain is
 needed on the consumer side. `MarsXlog.h` is an Objective-C wrapper of

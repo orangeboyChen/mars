@@ -1,6 +1,6 @@
 // swift-tools-version: 5.9
 //
-//  Mars - Swift Package Manager distribution (iOS)
+//  Mars - Swift Package Manager distribution (iOS + watchOS)
 //
 //      .package(url: "https://github.com/orangeboyChen/mars", from: "0.1.2")
 //
@@ -26,13 +26,15 @@ import PackageDescription
 let package = Package(
     name: "mars",
     platforms: [
-        .iOS(.v12)
+        .iOS(.v12),
+        .watchOS(.v9)
     ],
     products: [
         .library(name: "MarsXlog", targets: ["MarsXlog"])
     ],
     targets: [
-        // Prebuilt binary: ios-arm64 + ios-arm64_x86_64-simulator.
+        // Prebuilt binary: iOS + watchOS, device and simulator slices.
+        // Built by mars/build_xcframework.py, see docs/distribution.md.
         .binaryTarget(
             name: "MarsXlogBinary",
             url: "https://github.com/orangeboyChen/mars/releases/download/v2.0.0/MarsXlog.xcframework.zip",

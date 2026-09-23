@@ -1,7 +1,7 @@
 name: Release
 
 # One release for both platforms:
-#   * MarsXlog.xcframework.zip -> binary target of Package.swift (SPM)
+#   * MarsXlog.xcframework.zip (iOS + watchOS) -> binary target of Package.swift (SPM)
 #   * mars-xlog.aar / mars-core.aar / mars-android-native.zip -> JitPack + Maven
 #
 # Trigger it manually (Actions -> Release -> Run workflow) with a major/minor/
@@ -132,6 +132,87 @@ jobs:
         run: |
           cd mars
           python3 build_xcframework.py "${{ needs.version.outputs.tag }}" --zip
+
+      - name: Verify xcframework slices
+        # a binary target is resolved per platform: a release that quietly
+        # lost a slice still looks fine until somebody links a watch app
+        run: |
+          set -euo pipefail
+          XCFRAMEWORK=mars/cmake_build/XCFramework/MarsXlog.xcframework
+          for SLICE in ios-arm64 ios-arm64_x86_64-simulator \
+                       watchos-arm64_arm64_32 watchos-arm64_x86_64-simulator; do
+            if [ ! -d "$XCFRAMEWORK/$SLICE" ]; then
+              echo "::error::missing xcframework slice: $SLICE"
+              ls -1 "$XCFRAMEWORK"
+              exit 1
+            fi
+            echo "$SLICE: ok"
+          done
+
+      - name: Build the Swift package for iOS and watchOS
+        # the real proof: resolve Package.swift against the xcframework that
+        # was just built and link a consumer for every platform it declares
+        run: |
+          set -euo pipefail
+
+          # point the binary target at the local xcframework, the zip of this
+          # release is not published yet
+          python3 - <<'PY'
+          import re
+          path = 'mars/cmake_build/XCFramework/MarsXlog.xcframework'
+          src = open('Package.swift').read()
+          src = re.sub(r'\.binaryTarget\([^)]*\)',
+                       '.binaryTarget(name: "MarsXlogBinary", path: "%s")' % path,
+                       src, flags=re.S)
+          open('Package.swift', 'w').write(src)
+          PY
+
+          CONSUMER="$RUNNER_TEMP/spm-consumer"
+          mkdir -p "$CONSUMER/Sources/Consumer"
+          cat > "$CONSUMER/Package.swift" <<SWIFT
+          // swift-tools-version: 5.9
+          import PackageDescription
+
+          let package = Package(
+              name: "Consumer",
+              platforms: [.iOS(.v12), .watchOS(.v9)],
+              dependencies: [.package(path: "$GITHUB_WORKSPACE")],
+              targets: [
+                  .target(
+                      name: "Consumer",
+                      dependencies: [.product(name: "MarsXlog", package: "$(basename "$GITHUB_WORKSPACE")")]
+                  )
+              ]
+          )
+          SWIFT
+          cat > "$CONSUMER/Sources/Consumer/Log.swift" <<'SWIFT'
+          import MarsXlog
+
+          public func openLog() {
+              let config = MarsXlogOpenConfig()
+              config.logDir = NSTemporaryDirectory()
+              config.cacheDir = NSTemporaryDirectory()
+              config.namePrefix = "Consumer"
+              MarsXlog.open(config)
+              MarsXlog.info(module: "Net", function: #function, message: "hello")
+              MarsXlog.flush()
+              MarsXlog.close()
+          }
+          SWIFT
+
+          cd "$CONSUMER"
+          # SwiftPM names the generated scheme after either the package or the
+          # target depending on the checkout, so read it back instead of
+          # guessing
+          SCHEME=$(xcodebuild -list -json \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["workspace"]["schemes"][0])')
+          for DESTINATION in "generic/platform=iOS" "generic/platform=watchOS" "generic/platform=watchOS Simulator"; do
+            echo "::group::$DESTINATION"
+            xcodebuild -scheme "$SCHEME" -destination "$DESTINATION" \
+              -derivedDataPath "$RUNNER_TEMP/DerivedData/$(echo "$DESTINATION" | tr ' /=:' '____')" \
+              build
+            echo "::endgroup::"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
