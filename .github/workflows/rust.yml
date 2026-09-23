@@ -150,14 +150,13 @@ jobs:
           # then `CC`). The upper-cased `CC_<TRIPLE>` is silently ignored on
           # Linux, which makes cc-rs fall back to a bare
           # `<triple>-clang` on `$PATH` and fail.
-          export "CC_${target}=$clang"
+          # Note: `CC_<triple>` with the dashes is what cc-rs checks first, but
+          # neither bash nor zsh accepts a hyphen in `export NAME=...`, so the
+          # underscore spelling (cc-rs' second candidate) is used instead.
           export "CC_${flat}=$clang"
-          export "AR_${target}=$ndk_bin/llvm-ar"
           export "AR_${flat}=$ndk_bin/llvm-ar"
           export "CARGO_TARGET_${upper}_LINKER=$clang"
-          # Belt and braces: some NDK triples (armv7) only ship with a name
-          # that differs from the Rust target triple, so the env vars above do
-          # the real work; this just keeps `llvm-ar`/co. reachable.
+          # So that plain `llvm-ar` and friends are reachable too.
           export PATH="$ndk_bin:$PATH"
           cargo build --release -p mars-xlog-ffi --target "$target"
 
