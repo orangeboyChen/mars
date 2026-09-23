@@ -221,6 +221,7 @@ jobs:
           set -euo pipefail
           aar=libraries/mars_xlog_sdk/build/outputs/aar/mars_xlog_sdk-release.aar
           nm="$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          readelf="$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           for abi in arm64-v8a armeabi-v7a x86_64; do
             unzip -l "$aar" | grep -q "jni/$abi/libmarsxlog.so" || {
               echo "::error::$aar is missing jni/$abi/libmarsxlog.so"
@@ -233,6 +234,15 @@ jobs:
               exit 1
             fi
             echo "$abi: $exports JNI exports"
+            # Android 15 devices use 16 KiB pages and refuse to load a 4 KiB
+            # ELF; lld only defaults to 16 KiB on newer NDKs, so assert it.
+            align=$("$readelf" -l "libraries/mars_xlog_sdk/build/generated/jniLibs/$abi/libmarsxlog.so" \
+              | awk '$1 == "LOAD" { print $NF; exit }')
+            if [ "$align" != "0x4000" ]; then
+              echo "::error::$abi libmarsxlog.so is $align aligned, expected 0x4000"
+              exit 1
+            fi
+            echo "$abi: 16 KiB aligned"
           done
 
       # End-to-end check: the sample consumes the AAR straight from

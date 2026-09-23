@@ -20,6 +20,8 @@ android {
     compileSdk = 36
 
     defaultConfig {
+        // 21, not the 19 of the C++ build: the Rust standard library for the
+        // Android targets requires API 21.
         minSdk = 21
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")

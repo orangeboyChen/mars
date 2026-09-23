@@ -44,6 +44,13 @@ val rustWorkspace: File = (findProperty("mars.rust.dir") as String?)
 /** Crate producing `libmarsxlog.so`. */
 val rustCrate: String = (findProperty("mars.rust.crate") as String?) ?: "mars-xlog-jni"
 
+/**
+ * NDK release the cargo build links with. It is pinned because the linker
+ * default changed between releases: NDK 27 emits 4 KiB-aligned ELF, which
+ * cannot be `dlopen`ed on the 16 KiB-page devices Android 15 introduced.
+ */
+val ndkVersion: String = (findProperty("mars.ndk.version") as String?) ?: "27.1.12297006"
+
 val generatedJniLibs: Provider<Directory> = layout.buildDirectory.dir("generated/jniLibs")
 
 val prebuiltAbis: List<String> =
@@ -83,30 +90,29 @@ private fun androidSdkDirectory(): File {
 
 private fun ndkDirectory(): File {
     System.getenv("ANDROID_NDK_HOME")?.let { return file(it) }
-    val sdk = androidSdkDirectory()
-    val ndks = sdk.resolve("ndk")
-        .listFiles()
+    val ndkRoot = androidSdkDirectory().resolve("ndk")
+    ndkRoot.resolve(ndkVersion).takeIf { it.isDirectory }?.let { return it }
+    return ndkRoot.listFiles()
         ?.filter { it.isDirectory }
         ?.sorted()
-        ?: emptyList()
-    return ndks.lastOrNull()
+        ?.lastOrNull()
         ?: throw GradleException(
-            "No NDK installed under ${sdk.resolve("ndk")}: set ANDROID_NDK_HOME or " +
-                "install an NDK with the SDK manager."
+            "No NDK installed under $ndkRoot: install \"$ndkVersion\" with the SDK " +
+                "manager, or set ANDROID_NDK_HOME."
         )
 }
 
-private val ndkHostTag: String by lazy {
+private fun ndkBinDirectory(): File {
     val os = System.getProperty("os.name").lowercase()
-    when {
-        "windows" in os -> "windows-x86_64"
-        "mac" in os || "darwin" in os -> "darwin-x86_64"
-        else -> "linux-x86_64"
+    val hostTags = when {
+        "windows" in os -> listOf("windows-x86_64")
+        "mac" in os || "darwin" in os -> listOf("darwin-x86_64", "darwin-arm64")
+        else -> listOf("linux-x86_64", "linux-arm64")
     }
+    val prebuilt = ndkDirectory().resolve("toolchains/llvm/prebuilt")
+    val tag = hostTags.firstOrNull { prebuilt.resolve(it).isDirectory } ?: hostTags.first()
+    return prebuilt.resolve(tag).resolve("bin")
 }
-
-private fun ndkBinDirectory(): File =
-    ndkDirectory().resolve("toolchains/llvm/prebuilt/$ndkHostTag/bin")
 
 /** `armv7-linux-androideabi` -> `ARMV7_LINUX_ANDROIDEABI`, used by cargo's per-target env vars. */
 private fun cargoKey(triple: String): String = triple.uppercase().replace('-', '_')
@@ -153,7 +159,10 @@ val cargoBuildTasks: List<TaskProvider<Exec>> = cargoAbis.map { abi ->
         inputs.dir(rustWorkspace.resolve("crates"))
         inputs.file(rustWorkspace.resolve("Cargo.toml"))
         inputs.file(rustWorkspace.resolve("Cargo.lock"))
+        // 16 KiB page size and any other per-target rustflags live here.
+        inputs.file(rustWorkspace.resolve(".cargo/config.toml"))
         inputs.property("minApi", nativeMinApi)
+        inputs.property("ndk", ndkBin.absolutePath)
         outputs.file(library)
     }
 }

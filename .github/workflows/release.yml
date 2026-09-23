@@ -178,7 +178,7 @@ jobs:
           fi
           echo "sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null
-          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.1.12297006"
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
           ls "$ANDROID_HOME/ndk"
 
       # Only the C++ STN libraries come from CMake now; mars-xlog's
@@ -189,21 +189,22 @@ jobs:
           cd mars
           python3 build_android.py "${{ needs.version.outputs.tag }}" $ABIS
 
-      - name: Verify native libraries
+      - name: Verify the CMake libraries
         # build_android.py now exits non-zero on failure, but a partial build
         # (one ABI missing its .so) would still assemble a broken AAR, so check
-        # every ABI of every module explicitly.
+        # every ABI of mars-core explicitly. mars-xlog's libmarsxlog.so is not
+        # built yet: cargo produces it while gradle assembles the AAR, and it is
+        # verified right after that step.
         run: |
           set -euo pipefail
           MISSING=0
           for ABI in $ABIS; do
-            for LIB_DIR in libraries/mars_xlog_sdk/libs/$ABI libraries/mars_android_sdk/libs/$ABI; do
-              SO_COUNT=$(find "mars/$LIB_DIR" -name '*.so' 2>/dev/null | wc -l | tr -d ' ')
-              if [ "$SO_COUNT" -eq 0 ]; then
-                echo "::error::no .so for $ABI in $LIB_DIR"
-                MISSING=1
-              fi
-            done
+            LIB_DIR=mars/libraries/mars_android_sdk/libs/$ABI
+            SO_COUNT=$(find "$LIB_DIR" -name '*.so' 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$SO_COUNT" -eq 0 ]; then
+              echo "::error::no .so for $ABI in $LIB_DIR"
+              MISSING=1
+            fi
           done
           if [ "$MISSING" -ne 0 ]; then
             exit 1
@@ -223,9 +224,10 @@ jobs:
         run: |
           set -euo pipefail
           for ABI in $ABIS; do
+            SO=mars/libraries/mars_xlog_sdk/build/generated/jniLibs/$ABI/libmarsxlog.so
+            test -f "$SO" || { echo "::error::cargo produced no libmarsxlog.so for $ABI"; exit 1; }
             mkdir -p "mars/libraries/mars_xlog_sdk/libs/$ABI"
-            cp "mars/libraries/mars_xlog_sdk/build/generated/jniLibs/$ABI/libmarsxlog.so" \
-              "mars/libraries/mars_xlog_sdk/libs/$ABI/libmarsxlog.so"
+            cp "$SO" "mars/libraries/mars_xlog_sdk/libs/$ABI/libmarsxlog.so"
           done
           find mars/libraries/mars_xlog_sdk/libs -name '*.so' | sort
 

@@ -6,6 +6,11 @@ plugins {
 // Unlike :libraries:mars_xlog_sdk this module still ships the C++ STN
 // libraries, so it packages the prebuilt `libs/<abi>/*.so` produced by
 // `build_android.py` (jitpack.yml downloads them from the GitHub release).
+//
+// Those include the *C++* libmarsxlog.so, which libmarsstn.so links against,
+// so mars-core and mars-xlog currently publish two different files under the
+// same `jni/<abi>/libmarsxlog.so` path. An app that depends on both gets an
+// AGP duplicate-file error; it disappears once the C++ STN is ported too.
 
 /** Reads `gradle.properties` of this module, e.g. `PROJ_ARTIFACTID`. */
 fun propertyValue(name: String): String =
@@ -20,6 +25,8 @@ android {
     compileSdk = 36
 
     defaultConfig {
+        // 21, not the 19 of the C++ build: the Rust standard library for the
+        // Android targets requires API 21.
         minSdk = 21
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")

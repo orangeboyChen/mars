@@ -175,10 +175,16 @@ pub extern "system" fn Java_com_tencent_mars_xlog_Xlog_appenderOpen<'local>(
     config: JObject<'local>,
 ) {
     guard(|| {
-        let Some((config, _level)) = config_from_java(&mut env, &config) else {
+        let Some((config, level)) = config_from_java(&mut env, &config) else {
             return;
         };
-        let _ = mars_xlog_appender::appender_open(config);
+        // `XLogConfig` carries no level: the C++ `appender_open` called
+        // `xlogger_SetLevel` with the level from the Java config, and
+        // `Log.v()/d()` are gated on `getLogLevel(0)` in Java, so the level
+        // has to be applied to the default category explicitly.
+        if mars_xlog_appender::appender_open(config).is_ok() {
+            set_level(mars_xlog_appender::DEFAULT_HANDLE, level);
+        }
     })
 }
 
