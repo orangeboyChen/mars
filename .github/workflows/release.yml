@@ -150,9 +150,18 @@ jobs:
         # install the removed "tools" package and fails on current images.
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.1.12297006"
-          echo "$ANDROID_HOME/ndk/27.1.12297006"
+          SDKMANAGER=$(command -v sdkmanager || true)
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found under $ANDROID_HOME"
+            exit 1
+          fi
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.1.12297006"
+          ls "$ANDROID_HOME/ndk"
 
       - name: Build native libraries
         run: |
