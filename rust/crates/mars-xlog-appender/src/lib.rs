@@ -53,6 +53,7 @@ mod file_util;
 mod formater;
 mod sys;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -84,6 +85,132 @@ static CONSOLE_LOG_OPEN: AtomicBool = AtomicBool::new(false);
 
 fn slot() -> &'static Mutex<Option<Appender>> {
     APPENDER.get_or_init(|| Mutex::new(None))
+}
+
+/// `XloggerAppender::NewInstance` — one appender per `XloggerCategory`, as in
+/// `mars/xlog/src/xlogger_interface.cc`. The process-wide default above stays
+/// what `appender_open` creates and what handle `0` writes through.
+static INSTANCES: OnceLock<Mutex<Instances>> = OnceLock::new();
+
+/// Opaque id of an appender created by [`appender_open_instance`].
+pub type AppenderId = u64;
+
+struct Instances {
+    next: AppenderId,
+    map: HashMap<AppenderId, Appender>,
+}
+
+fn instances() -> &'static Mutex<Instances> {
+    INSTANCES.get_or_init(|| {
+        Mutex::new(Instances {
+            next: 1,
+            map: HashMap::new(),
+        })
+    })
+}
+
+fn lock_instances() -> MutexGuard<'static, Instances> {
+    instances()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Opens an appender that is *not* the process-wide default.
+///
+/// Every instance gets its own log directory, prefix, key, mode and cache
+/// file, like the C++ `XloggerAppender::NewInstance`. Returns `None` when the
+/// directory is empty or cannot be created.
+///
+/// # Errors
+///
+/// Propagates [`AppenderError`] when the directory cannot be created or
+/// the appender cannot be opened.
+pub fn appender_open_instance(config: XLogConfig) -> Result<AppenderId, AppenderError> {
+    if config.logdir.as_os_str().is_empty() {
+        return Err(AppenderError(
+            "appender_open_instance: logdir is empty".to_owned(),
+        ));
+    }
+
+    let appender = Appender::open(
+        config,
+        MAX_FILE_SIZE.load(Ordering::Relaxed),
+        MAX_ALIVE_TIME.load(Ordering::Relaxed) as i64,
+    )?;
+    appender.set_console_log(CONSOLE_LOG_OPEN.load(Ordering::Relaxed));
+
+    let mut instances = lock_instances();
+    let id = instances.next;
+    instances.next += 1;
+    instances.map.insert(id, appender);
+    Ok(id)
+}
+
+/// Closes and drops the instance; unknown ids are ignored.
+pub fn appender_close_instance(id: AppenderId) {
+    if let Some(mut appender) = lock_instances().map.remove(&id) {
+        appender.close();
+    }
+}
+
+/// Writes through a specific instance. `false` when the id is unknown or the
+/// appender is closed.
+pub fn appender_write_instance(id: AppenderId, info: Option<&XLoggerInfo>, logbody: &str) -> bool {
+    match lock_instances().map.get(&id) {
+        Some(appender) => {
+            let closed = appender.is_closed();
+            appender.write(info, logbody);
+            !closed
+        }
+        None => false,
+    }
+}
+
+/// Drains a specific instance.
+pub fn appender_flush_instance(id: AppenderId, sync: bool) {
+    if let Some(appender) = lock_instances().map.get_mut(&id) {
+        if sync {
+            appender.flush_sync();
+        } else {
+            appender.flush();
+        }
+    }
+}
+
+/// Sets the mode of a specific instance.
+pub fn appender_set_mode_instance(id: AppenderId, mode: AppenderMode) {
+    if let Some(appender) = lock_instances().map.get_mut(&id) {
+        let _ = appender.set_mode(mode);
+    }
+}
+
+/// Sets console logging for a specific instance.
+pub fn appender_set_console_log_instance(id: AppenderId, open: bool) {
+    if let Some(appender) = lock_instances().map.get_mut(&id) {
+        appender.set_console_log(open);
+    }
+}
+
+/// Sets the split size for a specific instance.
+pub fn appender_set_max_file_size_instance(id: AppenderId, bytes: u64) {
+    if let Some(appender) = lock_instances().map.get_mut(&id) {
+        appender.set_max_file_size(bytes);
+    }
+}
+
+/// Sets the expiry for a specific instance (values below one day are ignored).
+pub fn appender_set_max_alive_duration_instance(id: AppenderId, secs: u64) {
+    if let Some(appender) = lock_instances().map.get_mut(&id) {
+        appender.set_max_alive_duration(secs);
+    }
+}
+
+/// The log directory of a specific instance; `None` for an unknown id.
+pub fn appender_get_current_log_path_instance(id: AppenderId) -> Option<PathBuf> {
+    lock_instances()
+        .map
+        .get(&id)
+        .and_then(Appender::current_log_path)
 }
 
 fn lock_slot() -> MutexGuard<'static, Option<Appender>> {
