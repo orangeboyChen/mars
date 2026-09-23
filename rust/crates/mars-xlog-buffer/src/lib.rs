@@ -238,7 +238,13 @@ impl LogBuffer {
                 None => return false,
             }
         } else {
-            let room = region.len().saturating_sub(self.length);
+            // Reserve the tailer byte like the compress branch does, or a full
+            // region produces a record with no kMagicEnd and every reader
+            // discards it as corrupt.
+            let room = region
+                .len()
+                .saturating_sub(self.length)
+                .saturating_sub(TAILER_LEN);
             if room == 0 {
                 return false;
             }

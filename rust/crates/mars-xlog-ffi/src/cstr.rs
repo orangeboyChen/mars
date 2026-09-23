@@ -40,6 +40,35 @@ pub unsafe fn ptr_to_str_or_empty<'a>(ptr: *const c_char) -> &'a str {
     unsafe { ptr_to_str(ptr) }.unwrap_or("")
 }
 
+/// Reads a NUL-terminated C string into an owned `PathBuf`, preserving bytes
+/// that are not valid UTF-8.
+///
+/// Paths are bytes: `ptr_to_str_or_empty` turns a non-UTF-8 directory into
+/// `""`, which `mars_xlog_open` then rejects with `EMPTY_LOG_DIR` — logging
+/// silently off for a perfectly valid path. On unix the bytes are used as-is;
+/// elsewhere they are converted lossily so the call still succeeds.
+///
+/// # Safety
+///
+/// Same as [`ptr_to_str`].
+pub unsafe fn ptr_to_path_buf(ptr: *const c_char) -> std::path::PathBuf {
+    if ptr.is_null() {
+        return std::path::PathBuf::new();
+    }
+    // SAFETY: `ptr` is non-null and — per the caller's contract — points to a
+    // valid NUL-terminated string that outlives this call.
+    let cstr = unsafe { CStr::from_ptr(ptr) };
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(cstr.to_bytes()))
+    }
+    #[cfg(not(unix))]
+    {
+        std::path::PathBuf::from(cstr.to_string_lossy().into_owned())
+    }
+}
+
 /// Reads a single value through a possibly-null pointer.
 ///
 /// # Safety

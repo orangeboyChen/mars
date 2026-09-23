@@ -172,13 +172,14 @@ pub fn new_xlogger_instance(config: &XLogConfig, level: LogLevel) -> XloggerHand
     };
 
     let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-    // Another thread may have registered the prefix (and opened the appender)
-    // while the lock was free.
-    if let Some(handle) = registry.by_prefix.get(&config.nameprefix).copied() {
-        return handle;
-    }
+    // Record the ownership first: another thread may have registered the
+    // prefix while the lock was free, and returning early must not lose the
+    // fact that *we* opened the appender — otherwise nothing ever closes it.
     if opened {
         registry.opened_appender = true;
+    }
+    if let Some(handle) = registry.by_prefix.get(&config.nameprefix).copied() {
+        return handle;
     }
     let handle = registry.next;
     registry.next += 1;

@@ -43,7 +43,7 @@ pub fn level_enabled(level: i32) -> bool {
 
 /// `xlogger_pid()` — the OS process id.
 pub fn pid() -> i64 {
-    i64::from(std::process::id() as i32)
+    std::process::id() as i64
 }
 
 /// `xlogger_tid()` — the OS thread id, so records written through the FFI can

@@ -123,19 +123,22 @@ pub extern "C" fn mars_xlog_open(config: *const MarsXLogConfig) -> c_int {
         // otherwise points to a caller-owned NUL-terminated string.
         let (log_dir, name_prefix, pub_key, cache_dir) = unsafe {
             (
-                cstr::ptr_to_str_or_empty(cfg.log_dir),
+                cstr::ptr_to_path_buf(cfg.log_dir),
                 cstr::ptr_to_str_or_empty(cfg.name_prefix),
                 cstr::ptr_to_str_or_empty(cfg.pub_key),
-                cstr::ptr_to_str_or_empty(cfg.cache_dir),
+                cstr::ptr_to_path_buf(cfg.cache_dir),
             )
         };
 
-        if log_dir.is_empty() {
+        if log_dir.as_os_str().is_empty() {
             return MARS_XLOG_ERR_EMPTY_LOG_DIR;
         }
 
-        // Fall back to the documented `XLogConfig::default()` values for the
-        // Non-positive level falls back to the default; an empty prefix must
+        // Non-positive level falls back to the default. `name_prefix` still
+        // goes through UTF-8 (XLogConfig stores a String), so a non-UTF-8
+        // prefix is converted lossily — noted in the header; the directories
+        // above are byte-exact.
+        // An empty prefix must
         // stay empty: the C++ `XLogConfig::nameprefix_` has no default, so it
         // produces `.mmap3` / `_YYYYMMDD.xlog` and cache discovery is
         // prefix-based — substituting "Mars" would stop the Rust port from
@@ -143,7 +146,7 @@ pub extern "C" fn mars_xlog_open(config: *const MarsXLogConfig) -> c_int {
         let defaults = XLogConfig::default();
         let rust_config = XLogConfig {
             mode,
-            logdir: std::path::PathBuf::from(log_dir),
+            logdir: log_dir,
             nameprefix: name_prefix.to_string(),
             pub_key: pub_key.to_string(),
             compress_mode,
@@ -152,10 +155,10 @@ pub extern "C" fn mars_xlog_open(config: *const MarsXLogConfig) -> c_int {
             } else {
                 defaults.compress_level
             },
-            cachedir: if cache_dir.is_empty() {
+            cachedir: if cache_dir.as_os_str().is_empty() {
                 None
             } else {
-                Some(std::path::PathBuf::from(cache_dir))
+                Some(cache_dir)
             },
             cache_days: cfg.cache_days.max(0) as u32,
         };
@@ -309,7 +312,9 @@ pub extern "C" fn mars_xlog_current_log_path(out: *mut c_char, len: c_uint) -> c
         // checked above, and `bytes.len() + 1 <= len` guarantees both the copy
         // and the NUL write stay in bounds.
         unsafe {
-            let dst = std::slice::from_raw_parts_mut(out as *mut c_uchar, len as usize);
+            // Sized by what is written, not by what the caller claimed: a
+            // reference must never cover memory the caller did not hand over.
+            let dst = std::slice::from_raw_parts_mut(out as *mut c_uchar, bytes.len() + 1);
             dst[..bytes.len()].copy_from_slice(&bytes);
             dst[bytes.len()] = 0;
         }

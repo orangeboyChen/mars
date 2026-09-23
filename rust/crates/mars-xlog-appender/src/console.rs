@@ -3,6 +3,8 @@
 //! The C++ `printf`s to stdout; the port writes to stderr so that it does not
 //! mix with a program's normal output (the record format is unchanged).
 
+use std::io::Write;
+
 use crate::config::XLoggerInfo;
 use crate::formater::{extract_file_name, LEVEL_STRINGS};
 
@@ -20,7 +22,11 @@ pub(crate) fn console_log(info: Option<&XLoggerInfo>, log: &str) {
     let file_name = extract_file_name(info.filename.as_deref());
     let func_name = info.func_name.as_deref().unwrap_or("");
 
-    eprintln!(
+    // `eprintln!` panics when stderr cannot be written (EPIPE, full device).
+    // On the async writer thread there is no panic barrier, so that one panic
+    // would end logging for the whole process: ignore the error instead.
+    let _ = writeln!(
+        std::io::stderr(),
         "[{level}][{tag}][{file_name}, {func_name}, {}][{log}",
         info.line
     );

@@ -146,7 +146,10 @@ pub(crate) fn get_next_file_index(
     }
 
     if filesize > max_file_size {
-        index + 1
+        // i64::MAX + 1 must not wrap: in release that silently stops rotation
+        // and in debug it panics — on the async writer thread, which has no
+        // panic barrier.
+        index.saturating_add(1)
     } else {
         index
     }

@@ -20,11 +20,10 @@
 //!   fallback when mmap fails) lives in [`Region`] and is handed to the buffer
 //!   on every call.
 
-use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -55,6 +54,22 @@ const ASYNC_WAIT: Duration = Duration::from_secs(15 * 60);
 const TEMP_LOG_SIZE: usize = 16 * 1024;
 /// `gettimeofday`-free recursion guard threshold (`recursion_count > 10`).
 const MAX_RECURSION: u32 = 10;
+
+/// Decrements the per-thread recursion counter when it goes out of scope.
+struct RecursionGuard;
+
+impl Drop for RecursionGuard {
+    fn drop(&mut self) {
+        let _ = std::panic::catch_unwind(|| {
+            RECURSION_COUNT.with(|cell| cell.set(cell.get().saturating_sub(1)))
+        });
+    }
+}
+
+// The per-thread recursion counter undone by `RecursionGuard`.
+thread_local! {
+    static RECURSION_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
 
 /// Message sent to the async writer thread (`cond_buffer_async_.notifyAll()`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,10 +139,19 @@ fn map_region(file: &File) -> std::io::Result<memmap2::MmapMut> {
     }
 }
 
+/// Zeroes the cache file. Only needed when there is no mapping: with one,
+/// `LogBuffer::flush` and `close()` clear the bytes in place, and the file
+/// follows the mapping.
+fn clear_cache_file(path: &Path) {
+    if let Ok(file) = OpenOptions::new().write(true).truncate(true).open(path) {
+        let _ = file.set_len(BUFFER_BLOCK_LENGTH as u64);
+    }
+}
+
 /// Opens (creating if needed) and maps the cache file; falls back to a heap
 /// region on any error. Returns `(region, use_mmap)`.
 fn open_region(path: &Path) -> (Region, bool) {
-    let file = match OpenOptions::new()
+    let mut file = match OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -138,8 +162,28 @@ fn open_region(path: &Path) -> (Region, bool) {
         Err(_) => return (Region::heap(), false),
     };
 
+    // `ftruncate` records a size without reserving blocks; the first store
+    // into the mapping is what allocates. On a filesystem that does not
+    // reserve on truncate (ext4, f2fs, FAT — the Android targets) a full disk
+    // turns that store into SIGBUS, killing the host. `mars/comm/mmap_util.cc`
+    // pre-allocates by writing zeros and falls back to the heap path if that
+    // write fails; do the same.
+    let needs_preallocation = file
+        .metadata()
+        .map(|meta| meta.len() < BUFFER_BLOCK_LENGTH as u64)
+        .unwrap_or(true);
     if file.set_len(BUFFER_BLOCK_LENGTH as u64).is_err() {
         return (Region::heap(), false);
+    }
+    if needs_preallocation {
+        let ok = file
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| file.write_all(&vec![0u8; BUFFER_BLOCK_LENGTH]))
+            .and_then(|()| file.flush())
+            .is_ok();
+        if !ok {
+            return (Region::heap(), false);
+        }
     }
 
     match map_region(&file) {
@@ -207,7 +251,7 @@ struct AppenderInner {
     /// `consolelog_open_`
     console_log_open: bool,
     /// Channel to the async writer thread (replaces `cond_buffer_async_`).
-    tx: Option<Sender<Msg>>,
+    tx: Option<SyncSender<Msg>>,
     /// Whether the cache region is backed by the mmap file.
     use_mmap: bool,
 }
@@ -218,13 +262,19 @@ impl AppenderInner {
     }
 
     /// `cond_buffer_async_.notifyAll()`
+    ///
+    /// Bounded to one pending wake-up: the C++ condition variable has no
+    /// backlog, and an unbounded queue would grow without bound (and memset
+    /// 150 KiB per drained message) while the writer thread is stalled.
     fn notify(&self) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(Msg::Flush);
+            let _ = tx.try_send(Msg::Flush);
         }
     }
 
     fn notify_close(&self) {
+        // `Close` must not be dropped by the coalescing above, so it blocks
+        // until the queue has room (the receiver is draining).
         if let Some(tx) = &self.tx {
             let _ = tx.send(Msg::Close);
         }
@@ -248,19 +298,18 @@ impl AppenderInner {
 
         // `thread_local uint32_t recursion_count` — protects against logging
         // from inside the logger (which would otherwise recurse forever).
-        thread_local! {
-            static RECURSION_COUNT: Cell<u32> = const { Cell::new(0) };
-        }
-
         let count = RECURSION_COUNT.with(|cell| {
             let next = cell.get() + 1;
             cell.set(next);
             next
         });
+        // Restored on every exit path, including a panic: leaking it would
+        // leave the thread at MAX_RECURSION and silently drop every later
+        // record it logs.
+        let _recursion_guard = RecursionGuard;
 
         if count >= 2 {
             if count > MAX_RECURSION {
-                RECURSION_COUNT.with(|cell| cell.set(cell.get() - 1));
                 return;
             }
             // The C++ also dumps the recursion stack into the log file; the port
@@ -271,7 +320,6 @@ impl AppenderInner {
                 Some(&recursive),
                 &format!("ERROR!!! xlogger_appender Recursive calls!!!, count:{count}"),
             );
-            RECURSION_COUNT.with(|cell| cell.set(cell.get() - 1));
             return;
         }
 
@@ -279,8 +327,6 @@ impl AppenderInner {
             AppenderMode::Sync => self.write_sync(info, log),
             AppenderMode::Async => self.write_async(info, log),
         }
-
-        RECURSION_COUNT.with(|cell| cell.set(cell.get() - 1));
     }
 
     /// `XloggerAppender::__WriteSync`.
@@ -726,8 +772,24 @@ impl Appender {
         let mut leftover = AutoBuffer::new();
         appender.lock().flush_buffer(&mut leftover);
 
+        // Without a mapping nothing ever writes the region back, so the file
+        // still holds what was just drained and the next start would append it
+        // again — once per start, forever. (With a mapping, `flush_buffer`
+        // zeroes it in place.)
+        if !use_mmap {
+            clear_cache_file(&mmap_path);
+        }
+
         if appender.lock().config.mode == AppenderMode::Async {
-            appender.start_thread()?;
+            // `flush_buffer` above already cleared the cache, so returning an
+            // error here would lose the records that were just drained. The
+            // C++ calls SetMode() without checking and writes the leftover
+            // regardless; fall back to a synchronous drain instead.
+            if let Err(err) = appender.start_thread() {
+                appender.lock().config.mode = AppenderMode::Sync;
+                appender.lock().log2file(leftover.as_slice(), false);
+                return Err(err);
+            }
         }
 
         let mark = mark_info();
@@ -890,7 +952,10 @@ impl Appender {
             return Ok(());
         }
 
-        let (tx, rx) = mpsc::channel::<Msg>();
+        // Bounded at one pending wake-up: a stalled writer thread must not
+        // accumulate a message per write (the C++ used a condition variable,
+        // which has no backlog).
+        let (tx, rx) = mpsc::sync_channel::<Msg>(1);
         self.lock().tx = Some(tx);
 
         let inner = Arc::clone(&self.inner);
@@ -937,6 +1002,16 @@ impl Appender {
 
     /// `XloggerAppender::Close`.
     pub(crate) fn close(&mut self) {
+        // Mirrors the drain in `open`: without a mapping the file keeps its
+        // bytes, so it has to be cleared here too or the next start appends
+        // the same records again.
+        let (use_mmap, path) = {
+            let guard = self.lock();
+            (guard.use_mmap, mmap_file_path(&guard.config))
+        };
+        if !use_mmap {
+            clear_cache_file(&path);
+        }
         let mark = mark_info();
         let stamp = format_local_timestamp(now_secs());
         let (build_date, build_time) = match stamp.split_once(' ') {
@@ -1039,7 +1114,7 @@ impl Appender {
             return Vec::new();
         }
 
-        let tv = now_secs() - timespan * SECONDS_PER_DAY;
+        let tv = now_secs().saturating_sub(timespan.saturating_mul(SECONDS_PER_DAY));
         let log_path = make_log_file_name(
             tv,
             &logdir,
@@ -1088,7 +1163,7 @@ impl Appender {
             return Vec::new();
         }
 
-        let tv = now_secs() - timespan * SECONDS_PER_DAY;
+        let tv = now_secs().saturating_sub(timespan.saturating_mul(SECONDS_PER_DAY));
         let mut paths = get_file_paths_from_timeval(tv, &logdir, prefix, LOG_EXT);
         if let Some(cachedir) = cachedir {
             paths.extend(get_file_paths_from_timeval(tv, &cachedir, prefix, LOG_EXT));

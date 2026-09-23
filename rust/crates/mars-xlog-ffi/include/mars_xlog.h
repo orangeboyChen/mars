@@ -84,7 +84,7 @@ typedef enum {
 typedef struct {
     int mode;              /* MarsAppenderMode; default when unset: Async   */
     const char* log_dir;   /* mandatory, directory is created if missing     */
-    const char* name_prefix; /* NULL / "" => "Mars"                          */
+    const char* name_prefix; /* used verbatim; no default, as in C++      */
     const char* pub_key;   /* NULL / "" => logs are written unencrypted      */
     int compress_mode;     /* MarsCompressMode; default when unset: Zlib     */
     int compress_level;    /* <= 0 => keep the appender default (6)          */
