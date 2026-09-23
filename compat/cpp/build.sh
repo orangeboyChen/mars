@@ -56,14 +56,15 @@ if [ "${SYSTEM_ZSTD:-0}" = "1" ]; then
   echo "  (linking the system libzstd instead of mars/zstd)"
   zstd_sources=()
   zstd_libs=(-lzstd)
-  if [ -n "${ZSTD_LIB_DIR:-}" ]; then
-    zstd_libs=(-L"$ZSTD_LIB_DIR" -lzstd)
-  fi
-  if [ -n "${ZSTD_INCLUDE_DIR:-}" ]; then
-    includes+=(-I"$ZSTD_INCLUDE_DIR")
-  fi
-  includes+=(-I"$here/zstd_system_shim")
 fi
+
+# Object files are keyed on the source path only, so a flag change (notably
+# SYSTEM_ZSTD, which swaps the zstd headers) silently reused objects built
+# against the other configuration. Mix the flags into the build directory.
+flag_key="$(printf '%s' "${SYSTEM_ZSTD:-0}|${CXXFLAGS}|${CFLAGS}|${ZSTD_INCLUDE_DIR:-}" \
+  | cksum | cut -d' ' -f1)"
+build_dir="$build_dir/$flag_key"
+mkdir -p "$build_dir"
 
 includes=(
   -I"$root"
@@ -77,6 +78,12 @@ includes=(
 )
 if [ "${SYSTEM_ZSTD:-0}" = "1" ]; then
   includes+=(-I"$here/zstd_system_shim")
+fi
+if [ -n "${ZSTD_INCLUDE_DIR:-}" ]; then
+  includes+=(-I"$ZSTD_INCLUDE_DIR")
+fi
+if [ -n "${ZSTD_LIB_DIR:-}" ]; then
+  zstd_libs=(-L"$ZSTD_LIB_DIR" "${zstd_libs[@]}")
 fi
 
 objects=()

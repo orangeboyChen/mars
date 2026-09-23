@@ -78,9 +78,10 @@ def build_tools(rust_bin: Path, cpp_bin: Path) -> None:
     if not rust_bin.exists():
         print("building xlog-compat ...")
         run(["cargo", "build", "-p", "mars-xlog-compat", "--manifest-path", str(ROOT / "rust" / "Cargo.toml")])
-    if not cpp_bin.exists():
-        print("building compat_tool ...")
-        run([str(COMPAT / "cpp" / "build.sh"), str(cpp_bin)])
+    # Always run build.sh: it is incremental, and skipping it when the binary
+    # already exists would let a stale tool survive any C++ change.
+    print("building compat_tool ...")
+    run([str(COMPAT / "cpp" / "build.sh"), str(cpp_bin)])
 
 
 def encode(tool: list[str], case: tuple, records: Path, out: Path) -> None:
@@ -104,8 +105,10 @@ def decode(tool: list[str], src: Path, out: Path) -> None:
 def normalize(data: bytes, mask_seq: bool, mask_pubkey: bool) -> bytes:
     """Masks the fields that legitimately differ between two encoders.
 
-    * begin/end hour: both encoders stamp the wall-clock hour, so a run that
-      crosses an hour boundary would produce a spurious diff.
+    * both hours: begin is stamped when the record is opened and end when it is
+      flushed, so an hour boundary between the two encoders would produce a
+      spurious diff. The end hour being written at all is asserted by
+      `mars_xlog_buffer`'s `flush_stamps_the_end_hour` test.
     * seq, only for `is_compress == false` on the async path: the C++ passes
       `is_compress_` where `__GetSeq(bool _is_async)` expects the sync/async
       flag, so an uncompressed async buffer gets seq 0. The Rust port passes

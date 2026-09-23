@@ -73,6 +73,19 @@ enum Region {
 }
 
 impl Region {
+    /// A heap region seeded from the cache file, used when the file exists but
+    /// cannot be mapped. Those bytes are exactly what `attach()` would recover
+    /// from a mapping, so records left by a crashed process still reach the
+    /// log on the next flush instead of being resurrected days later.
+    fn heap_with_cache(path: &Path) -> Self {
+        let mut buffer = vec![0u8; BUFFER_BLOCK_LENGTH];
+        if let Ok(bytes) = std::fs::read(path) {
+            let len = bytes.len().min(BUFFER_BLOCK_LENGTH);
+            buffer[..len].copy_from_slice(&bytes[..len]);
+        }
+        Region::Heap(buffer)
+    }
+
     /// A zeroed heap region — the `new char[kBufferBlockLength]` fallback.
     fn heap() -> Self {
         Region::Heap(vec![0u8; BUFFER_BLOCK_LENGTH])
@@ -131,7 +144,12 @@ fn open_region(path: &Path) -> (Region, bool) {
 
     match map_region(&file) {
         Ok(mmap) => (Region::Mmap(mmap), true),
-        Err(_) => (Region::heap(), false),
+        // mmap is unavailable (sandbox, low memory, some OEM kernels). Fall
+        // back to a heap region, but take the on-disk contents with us:
+        // otherwise a cache file left by a crashed process is never drained,
+        // and a later run where mmap *does* work appends those records to a
+        // different day's log, behind a "begin of mmap" banner.
+        Err(_) => (Region::heap_with_cache(path), false),
     }
 }
 

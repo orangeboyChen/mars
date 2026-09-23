@@ -68,9 +68,10 @@ def byte_exact(case: dict) -> bool:
 
 def main() -> int:
     cpp = COMPAT / "cpp" / "compat_tool"
-    if not cpp.exists():
-        print("building compat_tool ...")
-        subprocess.run([str(COMPAT / "cpp" / "build.sh"), str(cpp)], check=True)
+    # Always run build.sh: it is incremental, and skipping it when the binary
+    # already exists would let a stale tool survive any C++ change.
+    print("building compat_tool ...")
+    subprocess.run([str(COMPAT / "cpp" / "build.sh"), str(cpp)], check=True)
 
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "inputs.bin").write_bytes(b"\n".join(run.RECORDS) + b"\n")

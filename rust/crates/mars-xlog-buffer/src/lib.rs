@@ -724,4 +724,65 @@ mod tests {
             assert!(!buf.is_crypt(), "{pubkey:?} must not enable TEA");
         }
     }
+
+    #[test]
+    fn flush_stamps_the_end_hour() {
+        use mars_xlog_crypt::magic;
+
+        // A record opened "long ago" so that begin hour != end hour: flush()
+        // has to overwrite the end hour with the current one, which is what
+        // `LogCrypt::update_log_hour` does in the C++ and nothing else does.
+        let mut region = vec![0u8; 4096];
+        let mut buffer = LogBuffer::new(true, None, CompressMode::Zlib, 6);
+        buffer.write(&mut region, b"hour test");
+        assert!(buffer.len() > HEADER_LEN);
+
+        let begin_hour = region[3];
+        region[4] = begin_hour.wrapping_add(3) & 0x0f;
+        assert_ne!(region[3], region[4]);
+
+        let mut out = AutoBuffer::new();
+        buffer.flush(&mut region, &mut out);
+
+        // The flushed copy carries the stamped end hour.
+        let flushed = out.as_slice();
+        assert_eq!(flushed[3], begin_hour, "begin hour must be preserved");
+        assert_eq!(
+            flushed[4],
+            local_hour_now(),
+            "flush() must stamp the current hour as the end hour"
+        );
+        assert_eq!(flushed[0], magic::ASYNC_NOCRYPT_ZLIB_START);
+    }
+
+    #[test]
+    fn zstd_compress_level_reaches_the_encoder() {
+        // Nothing else pins `XLogConfig::compress_level`: the byte comparison
+        // accepts a different size (the C++ vendors zstd 1.4.4), so an
+        // ignored level would ship unnoticed.
+        fn encode(level: i32) -> usize {
+            let mut region = vec![0u8; 64 * 1024];
+            let mut buffer = LogBuffer::new(true, None, CompressMode::Zstd, level);
+            let payload = std::iter::repeat_n(b'a', 8192).collect::<Vec<_>>();
+            buffer.write(&mut region, &payload);
+            let mut out = AutoBuffer::new();
+            buffer.flush(&mut region, &mut out);
+            out.len()
+        }
+
+        let fast = encode(1);
+        let best = encode(19);
+        assert!(
+            fast != best,
+            "compress level is not reaching the encoder: level 1 and 19 both produced {fast} bytes"
+        );
+    }
+
+    /// The hour `LogCrypt::update_log_hour` writes, i.e. the port's
+    /// `localtime()->tm_hour`, probed through the same call the test checks.
+    fn local_hour_now() -> u8 {
+        let mut probe = [0u8; HEADER_LEN];
+        mars_xlog_crypt::LogCrypt::update_log_hour(&mut probe);
+        probe[4] // off::END_HOUR
+    }
 }

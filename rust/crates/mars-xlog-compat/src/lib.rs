@@ -71,7 +71,11 @@ fn number<T: std::str::FromStr>(opts: &Opts, key: &str, default: T) -> Result<T,
 /// Rewrites `data` into a canonical form so two encodings can be compared byte
 /// for byte.
 ///
-/// * begin/end hour of every header: both encoders stamp the wall clock.
+/// * both hours of every header: the begin hour is stamped when the record is
+///   opened and the end hour when it is flushed, so a run (or a re-encode)
+///   that crosses an hour boundary would report a spurious diff. The end hour
+///   being written at all is covered by
+///   `mars_xlog_buffer`'s `flush_stamps_the_end_hour` test instead.
 /// * seq: `__GetSeq()` is a process-global counter in the C++ and a `static` in
 ///   the port, so the starting value depends on what the process did before.
 ///   Records are renumbered from 1, which still checks that they increase by

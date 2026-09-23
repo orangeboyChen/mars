@@ -17,9 +17,9 @@ use mars_xlog_ffi::{
     mars_xlog_close, mars_xlog_current_log_path, mars_xlog_flush, mars_xlog_flush_sync,
     mars_xlog_open, mars_xlog_set_console_log, mars_xlog_set_level,
     mars_xlog_set_max_alive_duration, mars_xlog_set_max_file_size, mars_xlog_write, MarsXLogConfig,
-    MARS_XLOG_ERR_APPENDER, MARS_XLOG_ERR_BAD_COMPRESS, MARS_XLOG_ERR_BAD_MODE,
-    MARS_XLOG_ERR_EMPTY_LOG_DIR, MARS_XLOG_ERR_NO_PATH, MARS_XLOG_ERR_NO_SPACE,
-    MARS_XLOG_ERR_NULL_CONFIG, MARS_XLOG_ERR_NULL_OUT, MARS_XLOG_OK,
+    MARS_XLOG_ERR_BAD_COMPRESS, MARS_XLOG_ERR_BAD_MODE, MARS_XLOG_ERR_EMPTY_LOG_DIR,
+    MARS_XLOG_ERR_NO_PATH, MARS_XLOG_ERR_NO_SPACE, MARS_XLOG_ERR_NULL_CONFIG,
+    MARS_XLOG_ERR_NULL_OUT, MARS_XLOG_OK,
 };
 
 /// Closes the appender when the test ends, even if it failed.
@@ -391,7 +391,7 @@ fn no_path_before_open() {
     mars_xlog_close();
     let mut buf = [0u8; 256];
     let n = mars_xlog_current_log_path(buf.as_mut_ptr() as *mut c_char, buf.len() as c_uint);
-    assert!(n == MARS_XLOG_ERR_NO_PATH || n > 0, "unexpected code {n}");
+    assert_eq!(n, MARS_XLOG_ERR_NO_PATH, "unexpected code {n}");
 }
 
 #[test]
@@ -436,7 +436,15 @@ fn zstd_mode_is_accepted() {
     mars_xlog_set_level(0);
     write(2, "smoke", "zstd-mode-record");
     mars_xlog_flush_sync();
-    assert!(!fs::read(log_file(dir.path())).unwrap().is_empty());
+    // Sync mode stores the payload verbatim, so the record must be readable as
+    // text: "the file is not empty" would also pass if compress_mode were
+    // ignored or the body were garbage.
+    let bytes = fs::read(log_file(dir.path())).unwrap();
+    assert!(
+        any_view_contains(&bytes, "zstd-mode-record"),
+        "the record is not in the log: {} bytes",
+        bytes.len()
+    );
     mars_xlog_close();
 }
 
@@ -460,10 +468,10 @@ fn appender_error_is_reported_not_panicked() {
         cache_days: 0,
     };
     let rc = mars_xlog_open(&cfg);
-    assert!(
-        rc == MARS_XLOG_OK || rc == MARS_XLOG_ERR_APPENDER,
-        "unexpected code {rc}"
-    );
+    // An empty prefix reaches the appender untouched, so this either opens or
+    // is refused — what must not happen is "both", which is what the old
+    // `OK || ERR_APPENDER` assertion accepted.
+    assert_eq!(rc, MARS_XLOG_OK, "unexpected code {rc}");
     mars_xlog_close();
 }
 

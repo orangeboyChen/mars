@@ -8,14 +8,22 @@ on:
   push:
     branches:
       - master
+    # mars/xlog, mars/comm and mars/zstd are compiled by compat/cpp/build.sh:
+    # a change to the C++ that the port has to match must run the diff too.
     paths:
       - 'rust/**'
       - 'compat/**'
+      - 'mars/xlog/**'
+      - 'mars/comm/**'
+      - 'mars/zstd/**'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
       - 'rust/**'
       - 'compat/**'
+      - 'mars/xlog/**'
+      - 'mars/comm/**'
+      - 'mars/zstd/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 

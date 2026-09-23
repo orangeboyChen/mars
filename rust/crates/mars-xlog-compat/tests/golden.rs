@@ -13,6 +13,16 @@ use std::path::{Path, PathBuf};
 
 use mars_xlog_compat::{decode_records, encode, normalize_for_compare, Opts};
 
+/// `__GetSeq()` is a process-global counter, so two tests that encode in
+/// parallel interleave their sequence numbers and every comparison sees
+/// spurious gaps. Encoding tests therefore run one at a time.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
@@ -68,8 +78,36 @@ fn every_golden_file_decodes_to_the_original_input() {
     }
 }
 
+/// The Rust *encoder's* crypt path — ECDH to the server public key, TEA, the
+/// pubkey slot in the header — is not byte-comparable (each run generates an
+/// ephemeral client key), so it is checked by round-tripping it through the
+/// decoder instead. Without this, reversing the TEA key words ships green.
+#[test]
+fn rust_encoded_crypt_records_round_trip_through_the_decoder() {
+    let _guard = serial();
+    let dir = fixtures();
+    let expected = std::fs::read(dir.join("expected.bin")).unwrap();
+    let key = privkey();
+    let tmp = tempfile::tempdir().unwrap();
+
+    for case in manifest()["cases"].as_array().unwrap() {
+        if case["crypt"].as_i64().unwrap() != 1 {
+            continue;
+        }
+        let name = case["name"].as_str().unwrap();
+        let out = tmp.path().join(format!("{name}-self.xlog"));
+        encode(&opts(&dir.join("inputs.bin"), &out, case)).unwrap();
+
+        let encoded = std::fs::read(&out).unwrap();
+        let decoded = decode_records(&encoded, &key)
+            .unwrap_or_else(|err| panic!("{name}: decoding our own crypt file failed: {err}"));
+        assert_eq!(decoded, expected, "{name}: crypt round trip drifted");
+    }
+}
+
 #[test]
 fn reencoding_reproduces_the_golden_bytes_where_that_is_deterministic() {
+    let _guard = serial();
     let dir = fixtures();
     let tmp = tempfile::tempdir().unwrap();
 
