@@ -45,6 +45,7 @@
 #![deny(missing_docs)]
 
 mod appender;
+pub mod category;
 mod config;
 mod console;
 mod dump;
@@ -56,6 +57,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+pub use category::{
+    flush, flush_all, get_level, get_xlogger_instance, is_enabled_for, new_xlogger_instance,
+    release_xlogger_instance, set_appender_mode, set_console_log_open, set_level, XloggerCategory,
+    XloggerHandle, DEFAULT_HANDLE,
+};
 pub use config::{AppenderError, AppenderMode, FileIoAction, LogLevel, XLogConfig, XLoggerInfo};
 pub use dump::xlogger_memory_dump;
 pub use formater::log_formater;
