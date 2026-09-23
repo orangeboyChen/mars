@@ -287,6 +287,39 @@ jobs:
           git tag -f "$TAG" "$SHA"
           git push -f origin "$TAG"
 
+      - name: Trigger the JitPack build
+        # JitPack builds lazily, so nothing would publish the Android artifacts
+        # to jitpack.io until a consumer asks for them. Kick the build off once
+        # the release assets are online and wait for the result.
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          REPO=com.github.orangeboyChen.mars
+          VERSION="${TAG#v}"
+          URL="https://jitpack.io/api/builds/$REPO/$TAG"
+          LOG="https://jitpack.io/$REPO/$TAG/build.log"
+          status() {
+            curl -sSfL "$URL" | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          print((d.get("com.github.orangeboyChen", {}).get("mars", {}).get("'"$VERSION"'")
+                 or d.get("com.github.orangeboyChen", {}).get("mars", {}).get("'"$TAG"'") or ""))'
+          }
+          curl -sSfL "$URL" > /dev/null || { echo "::warning::could not reach jitpack.io"; exit 0; }
+          for i in $(seq 1 40); do
+            STATE=$(status)
+            echo "JitPack $TAG: ${STATE:-unknown}"
+            case "$STATE" in
+              Ok) echo "JitPack build succeeded"; exit 0 ;;
+              Error)
+                echo "::error::JitPack build failed, see $LOG"
+                curl -sSfL "$LOG" | tail -40 || true
+                exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::warning::JitPack build still running after 20 minutes, check $LOG"
+
       - name: Summary
         env:
           TAG: ${{ needs.version.outputs.tag }}
