@@ -191,13 +191,16 @@ jobs:
         with:
           workspaces: rust
       # Both halves of the differential test are built explicitly so a build
-      # failure is attributed to the right side.
+      # failure is attributed to the right side. `defaults.run` puts every step
+      # in ./rust, so the repo-root steps need the workspace path.
       - name: Build the C++ compat tool
+        working-directory: ${{ github.workspace }}
         run: ./compat/cpp/build.sh
       - name: Build the Rust compat tool
         working-directory: rust
         run: cargo build -p mars-xlog-compat
       - name: Diff the two implementations
+        working-directory: ${{ github.workspace }}
         run: python3 compat/run.py
 
   docs:
