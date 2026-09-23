@@ -168,7 +168,7 @@ def main() -> int:
     xcframework = build_xcframework(args.tag)
 
     if args.zip:
-        zip_path = os.path.join(SCRIPT_PATH, DIST_PATH, '%s.xcframework.zip' % FRAMEWORK_NAME)
+        zip_path = os.path.join(SCRIPT_PATH, DIST_PATH, '%s.xcframework.zip' % XCFRAMEWORK_NAME)
         remove_if_exist(zip_path)  # noqa: F405
         subprocess.check_call(['ditto', '-c', '-k', '--keepParent', xcframework, zip_path])
         print(zip_path)
