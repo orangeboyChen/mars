@@ -416,13 +416,21 @@ jobs:
         # JitPack builds lazily, so nothing would publish the Android artifacts
         # to jitpack.io until a consumer asks for them. Kick the build off once
         # the release assets are online and wait for the result.
+        #
+        # Ask for the version *without* the "v". JitPack names the artifact
+        # after the version it was asked for, so asking for the tag publishes
+        # "...:mars-xlog:vX.Y.Z", and Gradle reads "vX.Y.Z" and "X.Y.Z" as two
+        # different modules - a consumer that ends up with both gets the
+        # library twice on its classpath. The tag keeps the prefix because
+        # SwiftPM resolves the package by tag; the Maven coordinate does not.
         env:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           REPO=com.github.orangeboyChen.mars
+          # tag is vX.Y.Z, the published version is X.Y.Z
           VERSION="${TAG#v}"
-          URL="https://jitpack.io/api/builds/$REPO/$TAG"
-          LOG="https://jitpack.io/$REPO/$TAG/build.log"
+          URL="https://jitpack.io/api/builds/$REPO/$VERSION"
+          LOG="https://jitpack.io/$REPO/$VERSION/build.log"
           status() {
             curl -sSfL "$URL" | python3 -c '
           import json, sys
@@ -433,7 +441,7 @@ jobs:
           curl -sSfL "$URL" > /dev/null || { echo "::warning::could not reach jitpack.io"; exit 0; }
           for i in $(seq 1 40); do
             STATE=$(status)
-            echo "JitPack $TAG: ${STATE:-unknown}"
+            echo "JitPack $VERSION: ${STATE:-unknown}"
             case "$(echo "$STATE" | tr '[:upper:]' '[:lower:]')" in
               ok) echo "JitPack build succeeded"; exit 0 ;;
               error)
@@ -461,6 +469,6 @@ jobs:
             echo "Package.swift PR: ${{ steps.package.outputs.pr || 'not needed, tag already exists' }}"
             echo ""
             echo '```gradle'
-            echo "implementation 'com.github.orangeboyChen.mars:mars_xlog_sdk:$TAG'"
+            echo "implementation 'com.github.orangeboyChen.mars:mars-xlog:${TAG#v}'"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
