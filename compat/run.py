@@ -101,7 +101,7 @@ def decode(tool: list[str], src: Path, out: Path) -> None:
     run(tool + ["decode", f"--privkey={KEYS['privkey']}", f"--in={src}", f"--out={out}"])
 
 
-def normalize(data: bytes, mask_seq: bool) -> bytes:
+def normalize(data: bytes, mask_seq: bool, mask_pubkey: bool) -> bytes:
     """Masks the fields that legitimately differ between two encoders.
 
     * begin/end hour: both encoders stamp the wall-clock hour, so a run that
@@ -111,6 +111,11 @@ def normalize(data: bytes, mask_seq: bool) -> bytes:
       flag, so an uncompressed async buffer gets seq 0. The Rust port passes
       `true` on purpose (documented in `LogBuffer::reset`). The appender always
       compresses, so the two agree everywhere it matters.
+    * the 64-byte client public key slot whenever crypt is off: `LogCrypt`
+      leaves `client_pubkey_` uninitialised when no server key is configured,
+      and `SetHeaderInfo` copies it into every header anyway, so the C++ writes
+      whatever was on the heap there. The Rust port writes zeros. No decoder
+      reads the field on the no-crypt magics, but the bytes differ.
     """
     out = bytearray(data)
     header = 73
@@ -122,9 +127,39 @@ def normalize(data: bytes, mask_seq: bool) -> bytes:
         if mask_seq:
             out[offset + 1] = 0
             out[offset + 2] = 0
+        if mask_pubkey:
+            out[offset + 9:offset + 73] = bytes(64)
         length = int.from_bytes(out[offset + 5:offset + 9], "little")
         offset += header + length + tailer
     return bytes(out)
+
+
+def describe_diff(a: bytes, b: bytes) -> str:
+    """Explains *where* two encodings differ, so a CI failure is actionable."""
+    fields = []
+    offset = 0
+    header = 73
+    tailer = 1
+    while offset + header + tailer <= len(a) and offset + header + tailer <= len(b):
+        for name, start, size in (
+            ("magic", 0, 1),
+            ("seq", 1, 2),
+            ("hour", 3, 2),
+            ("length", 5, 4),
+            ("pubkey", 9, 64),
+        ):
+            if a[offset + start:offset + start + size] != b[offset + start:offset + start + size]:
+                fields.append(f"{name}@{offset}")
+        length = int.from_bytes(a[offset + 5:offset + 9], "little")
+        body_a = a[offset + header:offset + header + length]
+        body_b = b[offset + header:offset + header + length]
+        if body_a != body_b:
+            n = sum(1 for x, y in zip(body_a, body_b) if x != y)
+            fields.append(f"payload@{offset} ({n}/{length} bytes)")
+        offset += header + length + tailer
+    if len(a) != len(b):
+        fields.append(f"total size {len(a)} vs {len(b)}")
+    return ", ".join(fields) if fields else "identical after masking"
 
 
 def main() -> int:
@@ -214,11 +249,15 @@ def main() -> int:
         # neither an ephemeral ECDH key nor a compressor (which need not agree
         # byte for byte across implementations) can change the bytes.
         deterministic = crypt == 0 and (sync == 1 or compress == 0)
-        normalized_equal = normalize(cpp_bytes, mask_seq=not sync and compress == 0) == normalize(
-            rust_bytes, mask_seq=not sync and compress == 0
+        normalized_equal = normalize(
+            cpp_bytes, mask_seq=not sync and compress == 0, mask_pubkey=crypt == 0
+        ) == normalize(
+            rust_bytes, mask_seq=not sync and compress == 0, mask_pubkey=crypt == 0
         )
         if deterministic and not normalized_equal:
-            failures.append(f"{name}: C++ and Rust produced different bytes")
+            failures.append(
+                f"{name}: C++ and Rust produced different bytes ({describe_diff(cpp_bytes, rust_bytes)})"
+            )
         status = "identical" if raw_equal else ("same modulo hour" if normalized_equal else "differ")
         rows.append((name, len(cpp_bytes), len(rust_bytes), status, roundtrip))
 
