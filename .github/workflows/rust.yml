@@ -117,7 +117,11 @@ jobs:
         run: |
           set -euo pipefail
           sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$sdkmanager" --licenses > /dev/null
+          # `yes` is killed by SIGPIPE as soon as sdkmanager stops reading, and
+          # under `pipefail` that 141 would fail the job even though sdkmanager
+          # itself succeeded. Grouping it keeps the pipeline status to
+          # sdkmanager's own exit code.
+          { yes || true; } | "$sdkmanager" --licenses > /dev/null
           "$sdkmanager" --install "ndk;${NDK_VERSION}"
           test -d "$ANDROID_HOME/ndk/${NDK_VERSION}"
       - uses: Swatinem/rust-cache@v2
