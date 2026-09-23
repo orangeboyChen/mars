@@ -221,6 +221,13 @@ pub fn appender_oneshot_flush(config: &XLogConfig) -> FileIoAction {
     if config.logdir.as_os_str().is_empty() {
         return FileIoAction::OpenFailed;
     }
+    // This is the "another process died with a full cache" recovery path. Run
+    // it while an appender is open for the same directory and it reads that
+    // cache file mid-write and then unlinks it, so every record the live
+    // appender buffers afterwards lands in an unnamed inode and is lost.
+    if appender_get_current_log_path().is_some() {
+        return FileIoAction::Unnecessary;
+    }
 
     let mut appender = match Appender::oneshot(
         config,
@@ -297,12 +304,28 @@ pub fn appender_getfilepath_from_timespan(
 }
 
 #[cfg(test)]
+pub(crate) mod test_lock {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// The appender is a process-wide singleton, so the tests that open, close
+    /// or assert on it must not run concurrently with each other.
+    pub(crate) fn serial() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn write_without_open_reports_false() {
-        // Nothing in this binary opens the singleton, so the call must fail.
+        let _guard = crate::test_lock::serial();
+        // Nothing else may hold the singleton while this runs, so the call
+        // must fail.
         assert!(!appender_write(None, "nothing"));
         assert!(appender_get_current_log_path().is_none());
         assert!(appender_get_current_log_cache_path().is_none());
@@ -314,6 +337,7 @@ mod tests {
 
     #[test]
     fn make_logfile_name_is_deterministic() {
+        let _guard = crate::test_lock::serial();
         let dir = Path::new("/tmp/mars-xlog-name-test");
         let paths = appender_make_logfile_name(0, "Mars", dir);
         assert_eq!(paths.len(), 1);
@@ -329,6 +353,7 @@ mod tests {
 
     #[test]
     fn getfilepath_from_timespan_lists_existing_files() {
+        let _guard = crate::test_lock::serial();
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let expected = appender_make_logfile_name(0, "Mars", dir).remove(0);
@@ -355,6 +380,7 @@ mod tests {
 
     #[test]
     fn setters_are_sticky_before_open() {
+        let _guard = crate::test_lock::serial();
         appender_set_max_file_size(1234);
         appender_set_max_alive_duration(3 * 24 * 60 * 60);
         appender_set_console_log(false);

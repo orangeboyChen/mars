@@ -94,10 +94,16 @@ impl Region {
 /// the cache file is only ever written through this mapping until `close()`.
 #[allow(unsafe_code)]
 fn map_region(file: &File) -> std::io::Result<memmap2::MmapMut> {
-    // SAFETY: `file` was opened read-write and sized to `BUFFER_BLOCK_LENGTH`
-    // above, and the appender is the only writer of that file for the whole
-    // lifetime of the mapping. The mapping is dropped together with the
-    // `AppenderInner` that owns it, before the `File` is closed.
+    // SAFETY: the invariant memmap2 needs is that nobody truncates or resizes
+    // the file while the mapping is alive. Two things hold here: the appender
+    // is the only writer of `<prefix>.mmap3` and it only ever writes through
+    // this mapping, and the mapping keeps the file alive on its own — the
+    // `File` it was created from is dropped at the end of `open_region()`, so
+    // the mapping, not the handle, is what pins the inode. What is *not*
+    // guaranteed is protection against an outside process (or the C++ xlog
+    // still linked into the same app during migration) truncating the file:
+    // that would turn every later touch of the mapping into SIGBUS. Opening
+    // the same cache file from two implementations at once is unsupported.
     unsafe {
         memmap2::MmapOptions::new()
             .len(BUFFER_BLOCK_LENGTH)
@@ -298,13 +304,15 @@ impl AppenderInner {
             len = ret;
         }
 
-        let written = {
+        // The C++ `LogBaseBuffer::Write` never fails here (its `PtrBuffer`
+        // clamps the copy and returns true), so a rejected write must still
+        // fall through to the flush threshold: returning early would leave a
+        // full region until the next fatal record or the 15 minute background
+        // wake-up.
+        let _written = {
             let region = self.region.as_mut_slice();
             self.buff.write(region, &temp[..len])
         };
-        if !written {
-            return;
-        }
 
         if self.buff.len() >= BUFFER_BLOCK_LENGTH / 3 || level_fatal {
             self.notify();
@@ -549,7 +557,10 @@ impl AppenderInner {
 
         let result = {
             let file = self.log_file.as_mut().expect("checked above");
-            let before_len = file.stream_position().unwrap_or(0);
+            // `stream_position()` is 0 on a handle opened with `append(true)`,
+            // no matter how much the file already holds — rolling back to it
+            // would truncate the whole day's log on the first ENOSPC.
+            let before_len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
             match file.write_all(data) {
                 Ok(()) => Ok(before_len),
                 Err(err) => Err((err.raw_os_error().unwrap_or(-1), before_len)),
@@ -603,6 +614,18 @@ pub(crate) struct Appender {
     inner: Arc<Mutex<AppenderInner>>,
     /// `thread_async_`
     thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Appender {
+    /// `close()` is the only path that stops the writer thread, and the thread
+    /// can never exit on its own: `tx` lives inside `AppenderInner`, which the
+    /// thread itself holds an `Arc` to, so the receiver is never disconnected.
+    /// Dropping without closing would leak a thread that wakes up every
+    /// `ASYNC_WAIT` for the lifetime of the process, pinning the mapping, the
+    /// log file and the whole inner state.
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl Appender {

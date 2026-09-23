@@ -28,8 +28,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::{
-    appender_flush, appender_flush_sync, appender_open, appender_set_console_log,
-    appender_set_mode, appender_write, AppenderMode, LogLevel, XLogConfig, XLoggerInfo,
+    appender_flush, appender_flush_sync, appender_set_console_log, appender_set_mode,
+    appender_write, AppenderMode, LogLevel, XLogConfig, XLoggerInfo,
 };
 
 /// Opaque id of a [`XloggerCategory`]; `0` is the default logger.
@@ -115,6 +115,11 @@ struct Registry {
     /// The logger handle `0` selects: `SetLevel(0, ..)` in the C++ configures
     /// the process-wide level, so it has to be reachable.
     default: XloggerCategory,
+    /// Whether the registry itself opened the shared appender. It may only
+    /// close what it opened — a caller can hold the very same singleton through
+    /// `appender_open()`, and closing it out from under them silently kills
+    /// every later `appender_write`.
+    opened_appender: bool,
 }
 
 fn registry() -> &'static Mutex<Registry> {
@@ -125,6 +130,7 @@ fn registry() -> &'static Mutex<Registry> {
             categories: HashMap::new(),
             by_prefix: HashMap::new(),
             default: XloggerCategory::default(),
+            opened_appender: false,
         })
     })
 }
@@ -140,19 +146,40 @@ pub fn new_xlogger_instance(config: &XLogConfig, level: LogLevel) -> XloggerHand
         return DEFAULT_HANDLE;
     }
 
+    // Fast path: already registered.
+    if let Some(handle) = registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .by_prefix
+        .get(&config.nameprefix)
+        .copied()
+    {
+        return handle;
+    }
+
+    // The appender is a process-wide singleton: the first caller opens it and
+    // every later prefix shares it (see the module note). Opening it does
+    // `create_dir_all`, an mmap and several writes, so it happens outside the
+    // registry lock — otherwise every other logger in the process stalls for
+    // the whole of that.
+    let opened = if crate::appender_get_current_log_path().is_none() {
+        match crate::appender_open(config.clone()) {
+            Ok(()) => true,
+            Err(_) => return DEFAULT_HANDLE,
+        }
+    } else {
+        false
+    };
+
     let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(handle) = registry.by_prefix.get(&config.nameprefix) {
-        return *handle;
+    // Another thread may have registered the prefix (and opened the appender)
+    // while the lock was free.
+    if let Some(handle) = registry.by_prefix.get(&config.nameprefix).copied() {
+        return handle;
     }
-
-    // The C++ creates one appender per instance; the port has a single
-    // process-wide one, so the first caller opens it and every later prefix
-    // shares it (see the module note). An appender that is already open is
-    // therefore not an error here.
-    if crate::appender_get_current_log_path().is_none() && appender_open(config.clone()).is_err() {
-        return DEFAULT_HANDLE;
+    if opened {
+        registry.opened_appender = true;
     }
-
     let handle = registry.next;
     registry.next += 1;
     let mut category = XloggerCategory::default();
@@ -181,12 +208,12 @@ pub fn release_xlogger_instance(nameprefix: &str) {
     };
     registry.categories.remove(&handle);
 
-    // The C++ releases the instance's own appender here. With one shared
-    // appender, releasing the last instance is what closes it — otherwise a
-    // later `new_xlogger_instance` would find it still open and the
-    // release/recreate lifecycle could not work.
-    if registry.categories.is_empty() {
-        drop(registry);
+    // Only the last instance closes the appender, and only if this registry is
+    // the one that opened it. The close happens with the lock still held so
+    // that a concurrent `new_xlogger_instance` cannot slip in between the
+    // decision and the close and end up with an appender that is gone.
+    if registry.categories.is_empty() && registry.opened_appender {
+        registry.opened_appender = false;
         crate::appender_close();
     }
 }
@@ -304,16 +331,7 @@ pub fn set_console_log_open(handle: XloggerHandle, open: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    /// The appender is a process-wide singleton and the default logger's level
-    /// is global too, so every test here has to run on its own.
-    fn serial() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-    }
+    use crate::test_lock::serial;
 
     fn config(prefix: &str, dir: &std::path::Path) -> XLogConfig {
         XLogConfig {

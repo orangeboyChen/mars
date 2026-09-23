@@ -135,16 +135,16 @@ pub extern "C" fn mars_xlog_open(config: *const MarsXLogConfig) -> c_int {
         }
 
         // Fall back to the documented `XLogConfig::default()` values for the
-        // fields the caller left "unset" (empty prefix, non-positive level).
+        // Non-positive level falls back to the default; an empty prefix must
+        // stay empty: the C++ `XLogConfig::nameprefix_` has no default, so it
+        // produces `.mmap3` / `_YYYYMMDD.xlog` and cache discovery is
+        // prefix-based — substituting "Mars" would stop the Rust port from
+        // draining (or being drained by) a C++ process's cache file.
         let defaults = XLogConfig::default();
         let rust_config = XLogConfig {
             mode,
             logdir: std::path::PathBuf::from(log_dir),
-            nameprefix: if name_prefix.is_empty() {
-                defaults.nameprefix
-            } else {
-                name_prefix.to_string()
-            },
+            nameprefix: name_prefix.to_string(),
             pub_key: pub_key.to_string(),
             compress_mode,
             compress_level: if cfg.compress_level > 0 {

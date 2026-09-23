@@ -87,7 +87,33 @@ fn os_thread_id() -> i64 {
 /// with a `*`).
 pub fn main_thread_id() -> i64 {
     static MAIN: OnceLock<i64> = OnceLock::new();
-    *MAIN.get_or_init(thread_id)
+    *MAIN.get_or_init(os_main_thread_id)
+}
+
+/// `xlogger_maintid()`: `getpid()` on unix (`mars/comm/unix/xlogger_threadinfo.cc`),
+/// and the real main thread on Apple, where the C++ captures `pthread_self()`
+/// from a load-time constructor.
+///
+/// Rust has no portable load-time constructor, so on Apple the first caller is
+/// used *only* when it really is the main thread (`pthread_main_np()`);
+/// otherwise the pid is used rather than stamping a worker thread's tid onto
+/// every record for the lifetime of the process.
+fn os_main_thread_id() -> i64 {
+    #[cfg(target_vendor = "apple")]
+    {
+        extern "C" {
+            fn pthread_main_np() -> libc::c_int;
+        }
+        if unsafe { pthread_main_np() } != 0 {
+            return thread_id();
+        }
+        std::process::id() as i64
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        std::process::id() as i64
+    }
 }
 
 /// Free space of the filesystem holding `path`, in bytes.
