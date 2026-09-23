@@ -58,8 +58,13 @@ needed on the consumer side. `MarsXlog.h` is an Objective-C wrapper of
 1. Run **Actions → Release → Run workflow** and pick `major` / `minor` /
    `patch`, or type the version directly (`1.2.3` and `v1.2.3` both work).
    The workflow builds everything, creates the `vX.Y.Z` tag and the release,
-   and commits the matching `url` / `checksum` into `Package.swift`.
-2. Pushing a `v*` tag yourself does the same thing for that tag.
+   and opens a pull request that commits the matching `url` / `checksum` into
+   `Package.swift`.
+2. The default branch is protected (no direct pushes), so the `Package.swift`
+   change always lands through that pull request on a
+   `chore/package-swift-vX.Y.Z` branch. The tag and the release are published
+   from the branch commit, so `from: "X.Y.Z"` resolves the new `Package.swift`
+   even before the PR is merged; merging only keeps the default branch in sync.
 
 `.github/workflows/release.yml` builds the xcframework (macOS runner) and the
 Android AARs (Linux runner),

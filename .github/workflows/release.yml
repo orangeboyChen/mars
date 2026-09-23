@@ -10,6 +10,11 @@ name: Release
 #
 # workflow_dispatch only: the workflow must live on the default branch, and the
 # tag is created by this workflow itself, so pushing it never re-triggers a run.
+#
+# Package.swift is updated on a topic branch and proposed as a pull request:
+# the default branch is protected and rejects direct pushes (GH013). The tag
+# and the release are published from that branch commit, so the new
+# Package.swift resolves at vX.Y.Z whether or not the PR has been merged yet.
 
 on:
   workflow_dispatch:
@@ -29,6 +34,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 env:
   XCFRAMEWORK_ZIP: MarsXlog.xcframework.zip
@@ -238,8 +244,19 @@ jobs:
       - name: Point Package.swift at this release
         if: needs.version.outputs.is_new == 'true'
         id: package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          CHECKSUM: ${{ steps.checksum.outputs.checksum }}
         run: |
-          python3 - "${{ needs.version.outputs.tag }}" "${{ steps.checksum.outputs.checksum }}" <<'PY'
+          set -euo pipefail
+          BRANCH="chore/package-swift-$TAG"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+
+          python3 - "$TAG" "$CHECKSUM" <<'PY'
           import re, sys
           tag, checksum = sys.argv[1], sys.argv[2]
           src = open('Package.swift').read()
@@ -247,10 +264,37 @@ jobs:
           src = re.sub(r'checksum: "[a-f0-9]+"', 'checksum: "%s"' % checksum, src)
           open('Package.swift', 'w').write(src)
           PY
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: point Package.swift at ${{ needs.version.outputs.tag }}"
-          git push origin HEAD:"${{ github.ref_name }}"
+
+          git commit -am "chore: point Package.swift at $TAG"
+          # force: rerunning the same version reuses the branch and its PR
+          git push --force origin "$BRANCH"
+
+          PR_URL=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url // empty')
+          if [ -z "$PR_URL" ]; then
+            PR_URL=$(gh pr create \
+              --base "${{ github.ref_name }}" \
+              --head "$BRANCH" \
+              --title "chore: point Package.swift at $TAG" \
+              --body "Automated release change: \`Package.swift\` now points at \`$TAG\`.
+
+          | | |
+          |---|---|
+          | tag | \`$TAG\` |
+          | SPM checksum | \`$CHECKSUM\` |
+          | binary | \`$XCFRAMEWORK_ZIP\` |
+
+          The release and the \`$TAG\` tag are already published from this branch,
+          so SPM resolves the new \`Package.swift\` from the tag. Merging only keeps
+          \`${{ github.ref_name }}\` in sync.")
+          fi
+
+          # best effort: auto-merge keeps the default branch in sync when the
+          # ruleset allows it; when it does not, the PR waits for a human and
+          # the published release is unaffected either way
+          gh pr merge --auto --squash "$PR_URL" \
+            || echo "::warning::could not enable auto-merge for $PR_URL; merge it by hand to sync ${{ github.ref_name }}"
+
+          echo "pr=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Publish release
@@ -332,6 +376,8 @@ jobs:
             echo '```'
             echo ""
             echo "SPM checksum: \`${{ steps.checksum.outputs.checksum }}\`"
+            echo ""
+            echo "Package.swift PR: ${{ steps.package.outputs.pr || 'not needed, tag already exists' }}"
             echo ""
             echo '```gradle'
             echo "implementation 'com.github.orangeboyChen.mars:mars_xlog_sdk:$TAG'"
