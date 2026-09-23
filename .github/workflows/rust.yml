@@ -128,8 +128,8 @@ jobs:
         with:
           workspaces: rust
       # `zstd-sys` compiles C, so both cc-rs and rustc need the NDK clang. The
-      # env var names are derived from the target (dashes become underscores),
-      # so they are exported from the shell rather than from `env:`.
+      # two of them spell the env var prefixes differently, so the names are
+      # built in the shell rather than from `env:`; see the comment below.
       # Only the FFI crate is built: it is what the Android glue links against
       # and it pulls the rest of the workspace in through path deps.
       - name: cargo build
