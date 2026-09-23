@@ -109,6 +109,11 @@ jobs:
   xcframework:
     name: xcframework (cargo)
     runs-on: macos-latest
+    defaults:
+      run:
+        # The workflow default is `rust/`; every step here is relative to the
+        # repository root instead.
+        working-directory: .
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
