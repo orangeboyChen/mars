@@ -430,11 +430,14 @@ fn tea_key(
 }
 
 fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
-        return None;
+    let digits = hex.as_bytes();
+    let mut out = Vec::with_capacity(digits.len() / 2);
+    let mut i = 0;
+    while i + 2 <= digits.len() {
+        let pair = std::str::from_utf8(&digits[i..i + 2]).ok()?;
+        out.push(u8::from_str_radix(pair, 16).ok()?);
+        i += 2;
     }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-        .collect()
+    // An odd number of digits leaves one character unpaired.
+    (i == digits.len()).then_some(out)
 }
