@@ -120,3 +120,6 @@ mars/openssl/include/openssl/*
 # Rust port of the xlog pipeline (./rust)
 rust/target/
 **/*.rs.bk
+
+# compat harness build output
+/compat/cpp/compat_tool

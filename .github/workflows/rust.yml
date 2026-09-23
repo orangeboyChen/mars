@@ -10,10 +10,12 @@ on:
       - master
     paths:
       - 'rust/**'
+      - 'compat/**'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
       - 'rust/**'
+      - 'compat/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -178,6 +180,25 @@ jobs:
         with:
           workspaces: rust
       - run: cargo build --release -p mars-xlog-ffi --target ${{ matrix.target }}
+
+  compat:
+    name: compat (c++ <-> rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # Both halves of the differential test are built explicitly so a build
+      # failure is attributed to the right side.
+      - name: Build the C++ compat tool
+        run: ./compat/cpp/build.sh
+      - name: Build the Rust compat tool
+        working-directory: rust
+        run: cargo build -p mars-xlog-compat
+      - name: Diff the two implementations
+        run: python3 compat/run.py
 
   docs:
     name: docs

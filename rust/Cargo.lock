@@ -423,6 +423,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mars-xlog-compat"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "k256",
+ "mars-xlog-buffer",
+ "mars-xlog-core",
+ "mars-xlog-crypt",
+ "zstd",
+]
+
+[[package]]
 name = "mars-xlog-core"
 version = "0.1.0"
 dependencies = [
