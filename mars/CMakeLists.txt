@@ -50,12 +50,12 @@ if(ANDROID)
     add_library(${SELF_LIB_NAME} SHARED ${SELF_SRC_FILES})
     install(TARGETS ${SELF_LIB_NAME} LIBRARY DESTINATION ${SELF_LIBS_OUT} ARCHIVE DESTINATION ${SELF_LIBS_OUT})
     get_filename_component(EXPORT_XLOG_EXP_FILE libraries/mars_android_sdk/jni/export.exp ABSOLUTE)
-    set(SELF_XLOG_LINKER_FLAG "-Wl,--gc-sections -Wl,--version-script='${EXPORT_XLOG_EXP_FILE}'") 
-    if(ANDROID_ABI STREQUAL "x86_64" OR ANDROID_ABI STREQUAL "x86")
-        # --no-warn-shared-textrel was removed from lld (NDK >= r23), -z notext keeps
-        # the old "allow relocations in the shared text segment" behaviour.
-        set(SELF_XLOG_LINKER_FLAG "-Wl,--gc-sections -Wl,--version-script='${EXPORT_XLOG_EXP_FILE}' -Wl,-z,notext")
-    endif()
+    # x86/x86_64 used to add -Wl,-z,notext, first as --no-warn-shared-textrel, to stop
+    # lld rejecting the link. Nothing in the build needs a text relocation any more:
+    # without the flag the link still succeeds, and every dynamic relocation lands in a
+    # writable section. Keeping it only made lld mark the output DT_TEXTREL, and Android
+    # 15+ refuses to dlopen a library that carries that flag.
+    set(SELF_XLOG_LINKER_FLAG "-Wl,--gc-sections -Wl,--version-script='${EXPORT_XLOG_EXP_FILE}'")
     find_library(CRYPT_LIB crypto PATHS openssl/openssl_lib_android/${ANDROID_ABI} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     find_library(SSL_LIB ssl PATHS openssl/openssl_lib_android/${ANDROID_ABI} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     target_link_libraries(${SELF_LIB_NAME} "${SELF_XLOG_LINKER_FLAG}"
