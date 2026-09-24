@@ -90,31 +90,24 @@ allprojects {
 
 dependencies {
     implementation 'com.github.orangeboyChen.mars:mars-xlog:v0.0.2'
-    // or, for the full mars (stn + sdt + xlog):
-    implementation 'com.github.orangeboyChen.mars:mars-core:v0.0.2'
 }
 ```
 
-The published artifact ids are `mars-xlog` and `mars-core` (they come from
-`artifactId` in the module build files, not from the Gradle project names).
+The published artifact id is `mars-xlog` (it comes from `artifactId` in the
+module build file, not from the Gradle project name).
 
 ### Without JitPack
 
 Every release also contains the built artefacts, so they can be used directly:
 
 - `mars-xlog.aar`
-- `mars-core.aar`
-- `mars-android-native.zip` — `libmarsxlog.so` / `libmarsstn.so` /
-  `libc++_shared.so` for `armeabi-v7a`, `arm64-v8a` and `x86_64`
+- `mars-android-native.zip` — `libmarsxlog.so` for `armeabi-v7a`,
+  `arm64-v8a` and `x86_64`
 
 ### Building the native libraries
 
-```bash
-export NDK_ROOT=$ANDROID_HOME/ndk/27.1.12297006
-cd mars
-python3 build_android.py v0.1.0 armeabi-v7a arm64-v8a x86_64            # mars-core
-python3 build_android.py v0.1.0 --xlog-only armeabi-v7a arm64-v8a x86_64 # mars-xlog
-```
-
-32-bit `x86` is not built: the vendored OpenSSL in `mars/openssl` has no
-`opensslconf_android-x86.h`.
+Nothing to build by hand: `./gradlew :libraries:mars_xlog_sdk:assembleRelease`
+cross-compiles `rust/crates/mars-xlog-jni` with cargo for every ABI
+(`mars/gradle/mars-cargo.gradle.kts`) and packages `libmarsxlog.so` into the
+AAR. Only an NDK (for the linker) and a Rust toolchain are needed — there is no
+CMake and no C++ left in the pipeline.

@@ -1,9 +1,10 @@
 # Mars xlog — Rust port
 
-This directory holds an incremental Rust port of the Mars **xlog** pipeline.
-It is a *strangler-fig* refactor, not a big-bang rewrite: the C++ sources under
-`mars/xlog/` stay authoritative for now, and each Rust crate replaces one layer
-so the two can coexist and be swapped one at a time.
+This directory holds the Rust port of the Mars **xlog** pipeline. Every crate
+here replaces one layer of the original C++ implementation, which has since been
+removed from the repository: the `mars/...` paths in the table below are the
+files these crates were ported *from*, and the wire format they had to match is
+now pinned by the golden `.xlog` files of `crates/mars-xlog-compat/fixtures`.
 
 ## Layout
 
@@ -13,7 +14,7 @@ so the two can coexist and be swapped one at a time.
 | `mars-xlog-crypt`     | `mars/xlog/crypt/log_crypt.{h,cc}`, `log_magic_num.h`            |
 | `mars-xlog-buffer`    | `mars/xlog/src/log_base_buffer.*`, `log_zlib_buffer.cc`, `log_zstd_buffer.cc` |
 | `mars-xlog-appender`  | `mars/xlog/src/appender.cc`, `formater.cc`, `xlogger_interface.cc` |
-| `mars-xlog-ffi`       | C ABI seam so `jni/` and the ObjC/C++ glue can call into Rust     |
+| `mars-xlog-ffi`       | C ABI seam behind `mars-xlog-jni` and the Swift API               |
 
 `PORT-CONTRACT.md` in this directory is the authoritative API contract between
 the crates — read it before changing a public signature.
@@ -58,4 +59,4 @@ vice versa.
 - [x] `mars-xlog-appender`
 - [x] `mars-xlog-ffi`
 - [ ] Switch the Android/iOS glue over to `mars-xlog-ffi`
-- [ ] Port `mars/comm` threading, `stn` and `sdt` (follow-up PRs)
+- [x] Retire the C++ implementation (xlog, STN, SDT and their vendored deps)

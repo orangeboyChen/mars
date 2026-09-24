@@ -51,11 +51,17 @@ Before submitting a pull request, please make sure the followings are done:
 6. Now, you can submit your pull request on `develop` or `hotfix` branch.
 
 ## Code Style Guide
-Use [Code Style for C/C++](http://zh-google-styleguide.readthedocs.io/en/latest/google-cpp-styleguide/).
 
-* 4 spaces for indentation rather than tabs
-* private function should start with "__".
-* function parameters should start with "_".
+The implementation is Rust, so the style is the toolchain's:
+
+* `cargo fmt --all` before every commit, and `cargo clippy --workspace
+  --all-targets -- -D warnings` has to stay clean.
+* Public items carry doc comments; `cargo doc` runs with `-D warnings`.
+* Commits and pull request titles are English and use
+  [Conventional Commits](https://www.conventionalcommits.org)
+  (`feat(rust):`, `fix(android):`, `test(compat):`, `chore:` …).
+* The work is reviewed as a stack: one pull request per logical step, linked
+  with `gh stack`, each one green on its own.
 
 ## License
 By contributing to Mars, you agree that your contributions will be licensed

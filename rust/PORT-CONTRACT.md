@@ -4,8 +4,9 @@ This file is the **single source of truth** for the API surface every crate in
 `rust/crates` must expose. Several agents work on different crates in parallel,
 so **do not change any signature listed here** without coordination.
 
-C++ sources being ported live in the *main* worktree:
-`/Users/orangeboy/Projects/mars/mars/xlog/...` (read-only reference).
+The C++ sources this was ported from have been removed from the repository;
+only the golden `.xlog` files of `crates/mars-xlog-compat/fixtures`, which were
+produced by the original encoders, still witness the on-disk format.
 
 ## Workspace layout
 

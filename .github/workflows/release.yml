@@ -2,7 +2,7 @@ name: Release
 
 # One release for both platforms:
 #   * MarsXlog.xcframework.zip -> binary target of Package.swift (SPM)
-#   * mars-xlog.aar / mars-core.aar / mars-android-native.zip -> JitPack + Maven
+#   * mars-xlog.aar / mars-android-native.zip -> JitPack + Maven
 #
 # Trigger it manually (Actions -> Release -> Run workflow) with a major/minor/
 # patch bump, or by typing a version directly - "1.2.3" and "v1.2.3" are both
@@ -40,7 +40,6 @@ env:
   XCFRAMEWORK_ZIP: MarsXlog.xcframework.zip
   NATIVE_ZIP: mars-android-native.zip
   XLOG_AAR: mars-xlog.aar
-  CORE_AAR: mars-core.aar
 
 jobs:
   version:
@@ -93,7 +92,7 @@ jobs:
             # complete means *all four* artifacts: a partial release must stay
             # repairable, otherwise a rerun skips the build jobs forever
             COMPLETE=true
-            for ASSET in "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP" "$XLOG_AAR" "$CORE_AAR"; do
+            for ASSET in "$XCFRAMEWORK_ZIP" "$NATIVE_ZIP" "$XLOG_AAR"; do
               grep -qx "$ASSET" <<< "$ASSETS" || COMPLETE=false
             done
             if [ "$COMPLETE" = true ]; then
@@ -181,45 +180,15 @@ jobs:
           "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
           ls "$ANDROID_HOME/ndk"
 
-      # Only the C++ STN libraries come from CMake now; mars-xlog's
-      # libmarsxlog.so is built by cargo while gradle assembles the AAR.
-      - name: Build native libraries
-        run: |
-          export NDK_ROOT=$ANDROID_HOME/ndk/27.1.12297006
-          cd mars
-          python3 build_android.py "${{ needs.version.outputs.tag }}" $ABIS
-
-      - name: Verify the CMake libraries
-        # build_android.py now exits non-zero on failure, but a partial build
-        # (one ABI missing its .so) would still assemble a broken AAR, so check
-        # every ABI of mars-core explicitly. mars-xlog's libmarsxlog.so is not
-        # built yet: cargo produces it while gradle assembles the AAR, and it is
-        # verified right after that step.
-        run: |
-          set -euo pipefail
-          MISSING=0
-          for ABI in $ABIS; do
-            LIB_DIR=mars/libraries/mars_android_sdk/libs/$ABI
-            SO_COUNT=$(find "$LIB_DIR" -name '*.so' 2>/dev/null | wc -l | tr -d ' ')
-            if [ "$SO_COUNT" -eq 0 ]; then
-              echo "::error::no .so for $ABI in $LIB_DIR"
-              MISSING=1
-            fi
-          done
-          if [ "$MISSING" -ne 0 ]; then
-            exit 1
-          fi
-
       - name: Build AARs
         run: |
           cd mars
           ./gradlew -Prelease --no-daemon \
-            :libraries:mars_xlog_sdk:assembleRelease \
-            :libraries:mars_android_sdk:assembleRelease
+            :libraries:mars_xlog_sdk:assembleRelease
 
       # jitpack.yml downloads mars-android-native.zip and unpacks it back into
-      # `mars/libraries`, so publish the cargo-built libmarsxlog.so next to the
-      # CMake libraries instead of the C++ one build_android.py used to emit.
+      # `mars/libraries`, so the cargo-built libmarsxlog.so has to be published
+      # where the module's `libs/<abi>/` is expected.
       - name: Stage the Rust xlog libraries
         run: |
           set -euo pipefail
@@ -235,9 +204,8 @@ jobs:
         run: |
           mkdir -p dist
           cp mars/libraries/mars_xlog_sdk/build/outputs/aar/mars_xlog_sdk-release.aar "dist/$XLOG_AAR"
-          cp mars/libraries/mars_android_sdk/build/outputs/aar/mars_android_sdk-release.aar "dist/$CORE_AAR"
           cd mars/libraries
-          zip -q -r "$GITHUB_WORKSPACE/dist/$NATIVE_ZIP" mars_xlog_sdk/libs mars_android_sdk/libs
+          zip -q -r "$GITHUB_WORKSPACE/dist/$NATIVE_ZIP" mars_xlog_sdk/libs
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,11 +1,10 @@
 # https://docs.jitpack.io — Android libraries on JitPack
 #
 #   implementation 'com.github.orangeboyChen.mars:mars-xlog:v0.0.2'
-#   implementation 'com.github.orangeboyChen.mars:mars-core:v0.0.2'
 #
-# JitPack has an Android SDK but no NDK, so the native libraries built by
-# .github/workflows/release.yml are downloaded from the release of the same
-# tag before the AARs are assembled.
+# JitPack has an Android SDK but no NDK and no Rust toolchain, so the
+# libmarsxlog.so built by .github/workflows/release.yml is downloaded from the
+# release of the same tag before the AAR is assembled.
 
 jdk:
   - openjdk17
@@ -29,4 +28,3 @@ before_install:
 install:
   - cd mars && ./gradlew -Prelease --no-daemon
     :libraries:mars_xlog_sdk:publishToMavenLocal
-    :libraries:mars_android_sdk:publishToMavenLocal

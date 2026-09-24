@@ -1,5 +1,0 @@
-{
-  "_comment": "Throw-away secp256k1 test key (openssl ecparam -name secp256k1 -genkey). pubkey is X||Y in hex, the 64-byte form LogCrypt::LogCrypt() expects; privkey is the 32-byte server key the decoder needs.",
-  "pubkey": "196d0b02543df00c8c1cf8ac58540286d3e568d7316a5de8a2f5a46f44a712518c726bb538f6abbc970391160c35f2df4c30bdb1a04cdba75c6098dcf2b4734b",
-  "privkey": "ef7e9da1abac66449ba6f8697d4d0ac63fecd5679da53b9aab1f72aba73d8e2b"
-}

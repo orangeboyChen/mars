@@ -1,39 +1,37 @@
 name: Rust
 
-# Build / lint / test gate for the Rust port of the xlog pipeline that lives in
-# ./rust. It is deliberately independent from the C++/CMake release workflows:
-# the Rust workspace must stay green on every push and PR that touches it.
+# Build / lint / test gate of the Rust xlog workspace (./rust), plus the
+# Android AAR that is built from it and the Apple XCFramework. Nothing in the
+# repository is C++ any more: the shipped libraries are the Rust crates, and
+# the wire format is pinned by the golden .xlog files of
+# rust/crates/mars-xlog-compat/fixtures.
 
 on:
   push:
     branches:
       - master
-    # mars/xlog, mars/comm and mars/zstd are compiled by compat/cpp/build.sh:
-    # a change to the C++ that the port has to match must run the diff too.
     paths:
       - 'rust/**'
-      - 'compat/**'
-      - 'mars/xlog/**'
-      - 'mars/comm/**'
-      - 'mars/zstd/**'
       - 'mars/libraries/**'
       - 'mars/gradle/**'
       - 'mars/build.gradle.kts'
       - 'mars/settings.gradle.kts'
       - 'samples/android/**'
+      - 'Sources/**'
+      - 'Package.swift'
+      - 'mars/build_xcframework.py'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
       - 'rust/**'
-      - 'compat/**'
-      - 'mars/xlog/**'
-      - 'mars/comm/**'
-      - 'mars/zstd/**'
       - 'mars/libraries/**'
       - 'mars/gradle/**'
       - 'mars/build.gradle.kts'
       - 'mars/settings.gradle.kts'
       - 'samples/android/**'
+      - 'Sources/**'
+      - 'Package.swift'
+      - 'mars/build_xcframework.py'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -358,45 +356,6 @@ jobs:
         with:
           workspaces: rust
       - run: cargo build --release -p mars-xlog-ffi --target ${{ matrix.target }}
-
-  compat:
-    name: compat (c++ <-> rust)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      # Both halves of the differential test are built explicitly so a build
-      # failure is attributed to the right side. `defaults.run` puts every step
-      # in ./rust, so the repo-root steps need the workspace path.
-      - name: Build the C++ compat tool
-        working-directory: ${{ github.workspace }}
-        run: ./compat/cpp/build.sh
-      - name: Build the Rust compat tool
-        working-directory: rust
-        run: cargo build -p mars-xlog-compat
-      - name: Diff the two implementations
-        working-directory: ${{ github.workspace }}
-        run: python3 compat/run.py
-      # The repo vendors zstd 1.4.4 while the Rust side builds 1.5.7, and
-      # different zstd versions do not emit identical bytes. When the runner's
-      # libzstd happens to be the same version as the Rust one, run the matrix
-      # again against it and require byte-identical output everywhere.
-      - name: Diff against the system zstd (byte exact)
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          rust_zstd="$(sed -n 's/^version = ".*+zstd\.\(.*\)".*/\1/p'             <(grep -A1 'name = "zstd-sys"' rust/Cargo.lock))"
-          sys_zstd="$(pkg-config --modversion libzstd)"
-          echo "zstd: rust ${rust_zstd:-?} vs system ${sys_zstd}"
-          if [ "${rust_zstd}" != "${sys_zstd}" ]; then
-            echo "versions differ, skipping the byte-exact pass"
-            exit 0
-          fi
-          SYSTEM_ZSTD=1 ./compat/cpp/build.sh compat/cpp/compat_tool_system
-          python3 compat/run.py --strict-bytes --cpp-bin compat/cpp/compat_tool_system
 
   docs:
     name: docs

@@ -1,9 +1,11 @@
-//! `xlog-compat` — the Rust half of the C++/Rust differential format test.
+//! `xlog-compat` — the Rust half of the differential format test.
 //!
 //! The port can only be trusted if the bytes it produces are the bytes the
-//! C++ reads, and the other way round. This binary exposes the two halves of
-//! that claim as a CLI so `compat/run.py` can drive both implementations over
-//! the same inputs and diff the results:
+//! original C++ implementation read, and the other way round. That used to be
+//! checked live by driving both implementations over the same inputs; with the
+//! C++ gone the very same claim is checked against the golden `.xlog` files of
+//! `fixtures/` (see `tests/golden.rs`), which the C++ encoders produced. This
+//! binary is the CLI that generates and decodes them:
 //!
 //! ```text
 //! xlog-compat encode --mode=zlib --compress=1 --sync=0 --pubkey=<hex> \
